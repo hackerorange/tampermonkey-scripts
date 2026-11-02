@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         广联达开发者控制台-版本快速切换
 // @namespace    zhongct.glodon.console.version.quick
-// @version      1.3.1
+// @version      1.3.2
 // @description  把应用详情页右侧「总览」改成快捷链接页：版本（release / release-pre）与常用功能（构建管理、版本发布）做成带图标的大方块；点版本直接切换（Vue 同步拦截，弹窗不再闪现），切页签回来也不闪旧页面。
 // @author       zhongct
 // @match        https://console.developer.glodon.com/*
@@ -134,6 +134,9 @@
         font-size: 11px; line-height: 16px; padding: 0 6px;
         color: #fff; background: #268dff; border-radius: 9px;
       }
+      /* 自动切换期间隐藏左侧版本下拉：hover 只是为了让站点把版本列表渲染出来，
+         不能让用户看见下拉一开一关（之前点方块会先弹出下拉再切换）。 */
+      body.gld-dd-suppress .el-dropdown-menu { visibility: hidden !important; }
     `;
     document.head.appendChild(style);
   }
@@ -254,6 +257,30 @@
   }
 
   // ---------- 版本切换（走左侧下拉，由页面自身 Vue 处理） ----------
+  // 侧栏可能被站点重绘（切换版本后 fetchAppVersionAndProduct 会重渲染），
+  // 方块闭包里捕获的 panel 会过期——旧元素上的版本号还是切换前的，
+  // 导致「已是当前版本」的短路判断失效，重复展开下拉重切一次。每次现取。
+  function livePanel() {
+    const p = document.querySelector(PANEL_SELECTOR);
+    return (p && p.closest('.application')) ? p : null;
+  }
+
+  // 自动交互期间把左侧下拉压成不可见，结束后复位并派发 mouseleave 关掉它
+  function suppressDropdown(on) {
+    document.body.classList.toggle('gld-dd-suppress', on);
+  }
+
+  function closeDropdown(panel) {
+    const trigger = panel.querySelector('.version-select') || panel.querySelector('.el-dropdown');
+    const root = panel.querySelector('.el-dropdown');
+    [trigger, root].forEach((el) => {
+      if (!el) return;
+      ['mouseleave', 'mouseout'].forEach((t) =>
+        el.dispatchEvent(new MouseEvent(t, { bubbles: true }))
+      );
+    });
+  }
+
   function currentVersionName(panel) {
     const el = panel.querySelector('.version-select .version-num');
     return normalize(el && el.textContent);
@@ -304,7 +331,14 @@
     return findVersionItem(document, name);   // 全文档兜底
   }
 
-  async function switchTo(panel, name) {
+  async function switchTo(panelHint, name) {
+    // 每次点击现取侧栏：闭包里的 panel 在站点重绘后可能已被替换
+    const panel = (panelHint && document.contains(panelHint)) ? panelHint : livePanel();
+    if (!panel) {
+      toast('未找到版本切换组件，请刷新页面重试');
+      console.warn(LOG, '侧栏版本选择器不在文档里，无法切换');
+      return;
+    }
     const before = currentVersionName(panel);
     // 已经是该版本就什么都不做：切换后当前版本会从下拉列表里消失，
     // 再点会误报「未找到版本」——v1.1.0 的「有时提示不存在」就是这个。
@@ -319,17 +353,26 @@
     // 页面 .el-dropdown 上常驻 disabled="disabled" 属性，实测不代表真的禁用，不据此拦下
     const markedDisabled = !!(dropdown && dropdown.hasAttribute('disabled'));
 
-    const item = await waitVersionItem(panel, name);
-    if (!item) {
-      toast('未找到版本「' + name + '」');
-      console.warn(LOG, '下拉里没有名为「' + name + '」的条目，当前为', before);
-      return;
-    }
-
     console.log(LOG, '切换到版本「' + name + '」（当前 ' + before + '）');
     hookSwitchVM(panel);    // 优先走 Vue 层拦截，弹窗根本不出现
-    armAutoConfirm(name);   // DOM 兜底：hook 没挂上或站点改版时自动点确定
-    item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    let item = null;
+    suppressDropdown(true);   // hover 展开只为让站点渲染列表，过程对用户不可见
+    try {
+      item = await waitVersionItem(panel, name);
+      if (!item) {
+        toast('未找到版本「' + name + '」');
+        console.warn(LOG, '下拉里没有名为「' + name + '」的条目，当前为', before);
+        return;
+      }
+      armAutoConfirm(name);   // DOM 兜底：hook 没挂上或站点改版时自动点确定
+      item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    } finally {
+      closeDropdown(panel);          // 复位 hover 状态，别让下拉一直挂着
+      // element-ui 收起下拉有 ~300ms 的离开延时，立刻解除隐藏会看见下拉闪一下，
+      // 等它真正收起后再恢复
+      setTimeout(() => suppressDropdown(false), 500);
+    }
 
     // 弹窗可能要等到几百毫秒后才渲染、自动确认点掉后版本才变，
     // 所以这里轮询等结果（最多 4s），不要在 800ms 就判死。
@@ -441,7 +484,7 @@
       key: name,
       label: name,
       icon: name === 'release-pre' ? 'branch' : 'tag',
-      onClick: () => switchTo(panel, name),
+      onClick: () => switchTo(null, name),   // 不传闭包里的 panel，switchTo 内部现取
     }));
 
     const menuTiles = SHORTCUTS.map((s) => makeTile({
