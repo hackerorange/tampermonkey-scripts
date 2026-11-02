@@ -7,7 +7,7 @@
 | 脚本 | 版本 | 适用站点 | 作用 |
 | --- | --- | --- | --- |
 | [rancher-404-redirect.user.js](./rancher-404-redirect.user.js) | 1.3.1 | `rancher.glodon.com` / `rancher-sg.glodon.com` / `rancher-pri.glodon.com` | 登录后偶发的「This page could not be found」错误页自动跳到 `/g/clusters`；顶部与侧边 Logo 点击也跳集群列表；日志弹窗固定为视口大小，长日志只在弹窗内部滚动 |
-| [glodon-console-fav-menus.user.js](./glodon-console-fav-menus.user.js) | 1.3.0 | `console.developer.glodon.com` | 左侧菜单末级项右侧加星星，标记常用菜单并高亮，记录持久化在本机 |
+| [glodon-console-fav-menus.user.js](./glodon-console-fav-menus.user.js) | 1.3.1 | `console.developer.glodon.com` | 左侧菜单末级项右侧加星星，标记常用菜单并高亮，记录持久化在本机 |
 | [pep-book-downloader.user.js](./pep-book-downloader.user.js) | 1.0.2 | `book.pep.com.cn` | 人教教材阅读器底部加「下载」按钮，抓取全部页面、去水印后打包 ZIP（仅供个人学习使用） |
 
 各脚本的详细行为、配置项与边界条件见 [SPEC.md](./SPEC.md)。

@@ -211,15 +211,16 @@ DOMContentLoaded（readyState=loading 时）┘
 
 ---
 
-## 2. `glodon-console-fav-menus.user.js`（v1.3.0）
+## 2. `glodon-console-fav-menus.user.js`（v1.3.1）
 
 **作用**：在开发者控制台左侧菜单（`div.left-menu`）的末级菜单项右侧加星星，点星星标记为常用；未收藏时悬停才显示空心星，收藏后菜单文字变黄。
 
 - **站点**：`https://console.developer.glodon.com/*`
 - **存储**：`GM_setValue('gld_console_fav_menus', [...])`，存的是菜单路径字符串数组（`一级 > 二级 > 三级`，按 DOM 层级拼出）
 - **判定**：`li.el-menu-item` 视为末级项，`li.el-submenu` 的标题参与路径拼接
+- **星标位置**：星标右侧到菜单项外边缘固定 `STAR_RIGHT_PX = 20px`（与菜单顶部折叠按钮对齐）。因为菜单项自身有 `padding-right`，实际 `margin-right` 取 `20 - paddingRight`（可为负），避免「padding + margin」叠加把星标推走；每次扫描会重新计算
 - **防重复注入**：处理过的 `li` 打 `data-gld-fav-star` 标记，重复扫描只同步状态不重复插星
-- **已知限制**：菜单文案（`span` 文本）或层级调整会导致路径变化，已收藏项按新路径视为未收藏；不做跨浏览器/跨设备同步
+- **已知限制**：菜单文案（`span` 文本）或层级调整会导致路径变化，已收藏项按新路径视为未收藏；不做跨浏览器/跨设备同步；若站点把折叠按钮的右侧间距也改了，需同步改 `STAR_RIGHT_PX`
 
 ## 3. `pep-book-downloader.user.js`（v1.0.2）
 

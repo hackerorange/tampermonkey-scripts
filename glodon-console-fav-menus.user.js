@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达开发者控制台-常用菜单标记
 // @namespace    zhongct.glodon.console.favorites
-// @version      1.3.0
-// @description  在左侧菜单(.left-menu)最末级菜单项最右侧添加星星，点击标记常用菜单；未收藏时悬停才显示空心星；收藏后菜单文字变黄；收藏记录持久化在本机（Tampermonkey 用户目录存储）。
+// @version      1.3.1
+// @description  在左侧菜单(.left-menu)最末级菜单项最右侧添加星星，点击标记常用菜单；未收藏时悬停才显示空心星；收藏后菜单文字变黄；星标右侧留白 20px，与菜单顶部折叠按钮对齐；收藏记录持久化在本机（Tampermonkey 用户目录存储）。
 // @author       zhongct
 // @match        https://console.developer.glodon.com/*
 // @grant        GM_getValue
@@ -25,6 +25,7 @@
   const MARKED_CLASS = 'gld-fav-marked';
   const GOLD = '#f7ba2a';
   const GRAY = '#c0c4cc';
+  const STAR_RIGHT_PX = 20;   // 星标右侧留白，与左菜单顶部的折叠按钮对齐
 
   // ---------- 存储 ----------
   let favCache = null;
@@ -79,7 +80,7 @@
       }
       .${STAR_CLASS} {
         margin-left: auto;
-        margin-right: 8px;
+        margin-right: 20px;
         width: 18px;
         height: 18px;
         cursor: pointer;
@@ -148,6 +149,13 @@
     return { svg, path };
   }
 
+  // 星标右侧距菜单项外边缘固定 STAR_RIGHT_PX；菜单项自身有 padding-right，这里减掉它，
+  // 避免「padding + margin」叠加导致星标越推越左（或贴着右沿）
+  function applyStarOffset(star, li) {
+    const pad = parseFloat(getComputedStyle(li).paddingRight) || 0;
+    star.style.marginRight = (STAR_RIGHT_PX - pad) + 'px';
+  }
+
   function createStar(li, favSet) {
     const star = document.createElement('span');
     star.className = STAR_CLASS;
@@ -177,8 +185,10 @@
       render(active);
     }
     star._gldSync = syncFromStorage;
+    star._gldAlign = () => applyStarOffset(star, li);
 
     syncFromStorage(favSet);
+    applyStarOffset(star, li);
 
     const stop = (e) => {
       e.preventDefault();
@@ -213,6 +223,7 @@
       const star = li.querySelector(':scope > .' + STAR_CLASS);
       if (li.hasAttribute(PROCESSED_ATTR) && star) {
         if (typeof star._gldSync === 'function') star._gldSync(favSet);
+        if (typeof star._gldAlign === 'function') star._gldAlign();
       } else {
         if (star) star.remove();
         li.removeAttribute(PROCESSED_ATTR);
