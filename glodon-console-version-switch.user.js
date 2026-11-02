@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达开发者控制台-版本快速切换
 // @namespace    zhongct.glodon.console.version.quick
-// @version      1.0.2
-// @description  在应用详情页左上角「版本选择」下方加 release / release-pre 快捷按钮（紧贴下拉框、左沿对齐），点击后自动在版本下拉里找到对应版本并切换，页面弹出的「是否继续」确认框自动点掉，直接跳转。
+// @version      1.1.0
+// @description  在应用详情页右侧「总览」页顶部加一条版本栏（当前版本 + release / release-pre 快捷按钮），点击后自动在左侧版本下拉里切换并自动确认页面弹窗、直接跳转；同时把总览页横向溢出的步骤条/学习卡片改成自适应换行，不再被右边裁掉。
 // @author       zhongct
 // @match        https://console.developer.glodon.com/*
 // @grant        none
@@ -20,19 +20,17 @@
   // ============ 配置 ============
   // 快捷按钮对应的版本名（与版本下拉里条目的名称精确匹配，顺序即按钮顺序）
   const TARGETS = ['release', 'release-pre'];
-  // 版本选择器容器（div.version.version-change），找不到时退回 .application .version
+  // 左侧版本选择器容器（div.version.version-change），切换仍然走它
   const PANEL_SELECTOR = '.application .version';
-  const BAR_CLASS = 'gld-version-quick';
+  // 「总览」微应用（qiankun 渲染在主文档里，不是 iframe）
+  const OVERVIEW_SELECTOR =
+    '#subapp-viewport > div[id^="__qiankun_microapp_wrapper_for_open_open_component_overview"]';
+  const BAR_CLASS = 'gld-version-bar';
   const BTN_CLASS = 'gld-vq-btn';
   const BTN_ACTIVE_CLASS = 'gld-vq-btn-active';
   const TOAST_ID = 'gld-vq-toast';
-  const PROCESSED_ATTR = 'data-gld-vq';
-  const ALIGNED_ATTR = 'data-gld-vq-aligned';
   const LOG = '[版本快速切换]';
 
-  // 布局常量
-  const BAR_GAP_PX = 8;        // 版本下拉底边 → 按钮顶边
-  const BAR_BOTTOM_PX = 12;    // 按钮底边 → 下方菜单的留白
   // 点击后自动确认确认框的时间窗
   const CONFIRM_WINDOW_MS = 10000;
 
@@ -71,33 +69,41 @@
     style.textContent = `
       .${BAR_CLASS} {
         display: flex;
-        gap: 6px;
-        margin: 0;
-        padding: 0 12px;
-        box-sizing: border-box;
-        /* 上下间距由 alignBar() 一次性算出（margin-top 贴下拉、padding-bottom 给下方留白） */
+        align-items: center;
+        gap: 10px;
+        margin: 0 0 12px;
+        padding: 8px 16px;
+        background: #fff;
+        border: 1px solid #e8e8e8;
+        border-radius: 4px;
+        font-size: 13px;
+        color: #595959;
+        line-height: 22px;
       }
+      .${BAR_CLASS} .gld-vb-label { font-weight: 600; color: #262626; }
+      .${BAR_CLASS} .gld-vb-cur { color: #262626; }
+      .${BAR_CLASS} .gld-vb-sep { width: 1px; height: 14px; background: #e8e8e8; }
       .${BTN_CLASS} {
-        padding: 2px 10px;
+        padding: 1px 10px;
         font-size: 12px;
         line-height: 18px;
-        border: 1px solid #dcdfe6;
+        border: 1px solid #d9d9d9;
         border-radius: 3px;
         background: #fff;
-        color: #606266;
+        color: #595959;
         cursor: pointer;
         user-select: none;
         white-space: nowrap;
       }
       .${BTN_CLASS}:hover {
-        color: #409eff;
-        border-color: #c6e2ff;
-        background: #ecf5ff;
+        color: #268dff;
+        border-color: #beddff;
+        background: #e9f4ff;
       }
       .${BTN_CLASS}.${BTN_ACTIVE_CLASS} {
         color: #fff;
-        background: #409eff;
-        border-color: #409eff;
+        background: #268dff;
+        border-color: #268dff;
         cursor: default;
       }
     `;
@@ -159,8 +165,7 @@
     ok.click();
   }
 
-  // ---------- 版本切换 ----------
-  // 在版本下拉菜单里按名称找条目；菜单是 v-show 常驻 DOM，无需真的展开
+  // ---------- 版本切换（仍走左侧下拉，由页面自身 Vue 处理） ----------
   function findVersionItem(root, name) {
     const scope = root || document;
     const items = scope.querySelectorAll('li.el-dropdown-menu__item.other-item');
@@ -172,7 +177,6 @@
     return null;
   }
 
-  // 当前选中的版本名（顶部触发器上的文字，如 " master"）
   function currentVersionName(panel) {
     const el = panel.querySelector('.version-select .version-num');
     return normalize(el && el.textContent);
@@ -180,12 +184,11 @@
 
   async function switchTo(panel, name) {
     const dropdown = panel.querySelector('.el-dropdown');
-    // 注意：页面上 .el-dropdown 常带 disabled="disabled" 属性，但实测仍能切换，所以不据此拦下
+    // 页面 .el-dropdown 上常驻 disabled="disabled" 属性，实测不代表真的禁用，不据此拦下
     const markedDisabled = !!(dropdown && dropdown.hasAttribute('disabled'));
     if (markedDisabled) console.log(LOG, '下拉带 disabled 属性，仍尝试切换');
 
     const trigger = panel.querySelector('.version-select');
-    // 先模拟 hover 打开下拉（Element UI 默认 hover 触发），让页面按真实交互走一遍
     if (trigger) {
       ['mouseenter', 'mouseover'].forEach((t) =>
         trigger.dispatchEvent(new MouseEvent(t, { bubbles: true }))
@@ -195,7 +198,6 @@
 
     let item = findVersionItem(panel, name);
     if (!item && trigger) {
-      // 兜底：菜单懒渲染或 hover 未生效时，补偿一次点击
       trigger.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       await sleep(300);
       item = findVersionItem(panel, name);
@@ -217,6 +219,7 @@
     const selected = item.classList.contains('select-item') || !!item.querySelector('.cur-select');
     if (after === name || selected || !document.contains(panel)) {
       console.log(LOG, '切换成功 →', after);
+      refreshBars();
       return;
     }
     toast(markedDisabled
@@ -225,18 +228,27 @@
     console.warn(LOG, '点击已派发但版本未变化，当前仍为', after);
   }
 
-  // ---------- 注入按钮 ----------
+  // ---------- 总览页版本栏 ----------
   function buildBar(panel) {
     const bar = document.createElement('div');
     bar.className = BAR_CLASS;
-    const cur = currentVersionName(panel);
+
+    const label = document.createElement('span');
+    label.className = 'gld-vb-label';
+    label.textContent = '版本';
+    const cur = document.createElement('span');
+    cur.className = 'gld-vb-cur';
+    cur.textContent = currentVersionName(panel) || '—';
+    const sep = document.createElement('span');
+    sep.className = 'gld-vb-sep';
+    bar.append(label, cur, sep);
 
     TARGETS.forEach((name) => {
       const btn = document.createElement('span');
       btn.className = BTN_CLASS;
       btn.textContent = name;
       btn.title = '切换到版本「' + name + '」';
-      if (cur === name) btn.classList.add(BTN_ACTIVE_CLASS);
+      if (cur.textContent === name) btn.classList.add(BTN_ACTIVE_CLASS);
       btn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -247,61 +259,61 @@
     return bar;
   }
 
-  // 找到面板对应的按钮条（SPA 重绘后可能插进了别的兄弟节点）
-  function findBar(panel) {
-    const next = panel.nextElementSibling;
-    if (next && next.classList.contains(BAR_CLASS)) return next;
-    const parent = panel.parentElement;
-    if (!parent) return null;
-    const cand = parent.querySelector(':scope > .' + BAR_CLASS);
-    return cand || null;
-  }
-
-  // 让按钮条紧贴版本下拉下方、左沿对齐。
-  // 关键：量之前先把 margin-top 归零，用「自然间距」算一次补偿；算完打标记，之后不再重算。
-  // 旧版用「已生效 margin 后的位置」反推，补偿会被当成自然间距，每扫一次就把间距推回去，于是来回抖。
-  function alignBar(panel, bar, force) {
-    if (!bar || !bar.isConnected) return;
-    const sel = panel.querySelector('.version-select');
-    if (!sel) return;
-    if (!force && bar.getAttribute(ALIGNED_ATTR) === '1') return;
-
-    bar.style.marginTop = '0px';
-    const s = sel.getBoundingClientRect();
-    const b = bar.getBoundingClientRect();
-    if (!s.height || !b.height) return;   // 未渲染（例如面板折叠）时跳过
-
-    bar.style.marginTop = Math.round(BAR_GAP_PX - (b.top - s.bottom)) + 'px';
-    bar.style.paddingLeft = Math.max(0, Math.round(s.left - b.left)) + 'px';
-    bar.style.paddingBottom = BAR_BOTTOM_PX + 'px';
-    bar.setAttribute(ALIGNED_ATTR, '1');
-  }
-
-  function decorate(panel) {
-    let bar = findBar(panel);
-
-    if (!bar) {
-      panel.setAttribute(PROCESSED_ATTR, '1');
-      bar = buildBar(panel);
-      panel.insertAdjacentElement('afterend', bar);
-      alignBar(panel, bar, true);
-      console.log(LOG, '已注入快捷按钮：', TARGETS.join(' / '));
-      return;
-    }
-
-    // 已注入：只刷新激活态，间距已对齐就不再动
-    const cur = currentVersionName(panel);
-    bar.querySelectorAll('.' + BTN_CLASS).forEach((btn) => {
-      btn.classList.toggle(BTN_ACTIVE_CLASS, btn.textContent === cur);
+  function refreshBars() {
+    const panel = document.querySelector(PANEL_SELECTOR);
+    const cur = panel ? currentVersionName(panel) : '';
+    document.querySelectorAll('.' + BAR_CLASS).forEach((bar) => {
+      const curEl = bar.querySelector('.gld-vb-cur');
+      if (curEl && cur) curEl.textContent = cur;
+      bar.querySelectorAll('.' + BTN_CLASS).forEach((btn) => {
+        btn.classList.toggle(BTN_ACTIVE_CLASS, btn.textContent === cur);
+      });
     });
-    alignBar(panel, bar, false);
+  }
+
+  // 总览页内容是微应用渲染的，横向内容（5 阶段步骤、学习卡片）在小窗口下会被右边裁掉。
+  // 这里把「比可视区宽」的容器放宽：去掉固定最小宽、允许 flex 换行；滚动容器和弹层不动。
+  function relaxLayout(root) {
+    const scroller = root.closest('.el-scrollbar__wrap, .el-scrollbar');
+    const visibleW = (scroller && scroller.clientWidth)
+      || (root.parentElement && root.parentElement.clientWidth)
+      || window.innerWidth;
+    if (!visibleW) return;
+
+    root.querySelectorAll('div,section,ul').forEach((el) => {
+      if (el.dataset.gldRelax === '1') return;
+      const w = el.getBoundingClientRect().width;
+      if (w <= visibleW + 2) return;                       // 没超出可视区
+      const cs = getComputedStyle(el);
+      if (cs.position === 'fixed' || cs.position === 'absolute') return;  // 弹层等不动
+      if (cs.overflowX === 'auto' || cs.overflowX === 'scroll') return;   // 本就设计为滚动
+      el.dataset.gldRelax = '1';
+      el.style.minWidth = '0';
+      el.style.maxWidth = '100%';
+      if (el.style.width && parseFloat(el.style.width) > visibleW) el.style.width = '100%';
+      if (cs.display.indexOf('flex') >= 0) {
+        el.style.flexWrap = 'wrap';
+        if (!el.style.rowGap) el.style.rowGap = '16px';
+      }
+    });
+  }
+
+  function decorateOverview(wrap, panel) {
+    let bar = wrap.querySelector(':scope > .' + BAR_CLASS);
+    if (!bar) {
+      bar = buildBar(panel);
+      wrap.insertBefore(bar, wrap.firstChild);
+      console.log(LOG, '已在总览页注入版本栏：', TARGETS.join(' / '));
+    }
+    relaxLayout(wrap);
+    refreshBars();
   }
 
   function scan() {
-    document.querySelectorAll(PANEL_SELECTOR).forEach((panel) => {
-      // 只处理应用详情面板里的版本选择器（其父容器是 .application）
-      if (!panel.closest('.application')) return;
-      decorate(panel);
+    const panel = document.querySelector(PANEL_SELECTOR);
+    if (!panel || !panel.closest('.application')) return;   // 找不到侧栏版本选择器就不注入
+    document.querySelectorAll(OVERVIEW_SELECTOR).forEach((wrap) => {
+      decorateOverview(wrap, panel);
     });
   }
 
@@ -316,8 +328,9 @@
   }
 
   function realignAll() {
-    document.querySelectorAll('.' + BAR_CLASS).forEach((bar) => {
-      bar.removeAttribute(ALIGNED_ATTR);
+    // 窗口尺寸变化后重新探测溢出
+    document.querySelectorAll('[data-gld-relax]').forEach((el) => {
+      delete el.dataset.gldRelax;
     });
     scheduleScan();
   }
@@ -328,7 +341,7 @@
     const observer = new MutationObserver(scheduleScan);
     observer.observe(document.body, { childList: true, subtree: true });
     window.addEventListener('resize', realignAll);
-    console.log(LOG, '已启动：版本选择下方快捷按钮 →', TARGETS.join(' / '));
+    console.log(LOG, '已启动：总览页版本栏 →', TARGETS.join(' / '));
   }
 
   if (document.readyState === 'loading') {

@@ -227,22 +227,20 @@ DOMContentLoaded（readyState=loading 时）┘
 - **调试**：控制台执行 `__gldStarDebug()` 打印每个菜单项的「菜单名 / 收藏键 / 是否已收藏 / 星标中心 / 箭头中心 / 差值 / 定位方式」，便于核对
 - **已知限制**：只看菜单名，所以**不同父级下的同名菜单会被视为同一项**（一起点亮）；菜单改名等于新菜单（旧名字的记录保留但不再匹配）；不做跨浏览器/跨设备同步；若某级菜单标题里没有箭头类图标，会退回固定留白
 
-## 3. `glodon-console-version-switch.user.js`（v1.0.2）
+## 3. `glodon-console-version-switch.user.js`（v1.1.0）
 
-**作用**：在开发者控制台应用详情页（如「基础数据管理」）左上角「版本选择」下拉的下方，加一排快捷按钮，点击后自动在版本下拉里找到对应版本并切换，免去展开下拉逐个找；页面随后弹出的「你将切换到 xxx，是否继续」确认框会自动点掉，点了就直接跳转。
+**作用**：在开发者控制台应用详情页右侧「总览」页顶部加一条版本栏（当前版本 + release / release-pre 快捷按钮），点击后自动在左侧版本下拉里切换并自动确认页面弹窗、直接跳转；同时把总览页横向溢出的内容（5 阶段步骤条、学习卡片）改成自适应换行，不再被右边裁掉。
 
 - **站点**：`https://console.developer.glodon.com/*`
+- **v1.1.0 变更**：按钮从「侧栏下拉框下方」整体搬到「总览页顶部」，侧栏恢复站点原样（v1.0.x 的间距对齐/抖动问题随之不复存在）
 - **按钮来源**：脚本顶部 `TARGETS = ['release', 'release-pre']`，数组顺序即按钮顺序，可增删版本名
-- **注入位置**：`.application .version`（即 `div.version.version-change`）容器的 `afterend`；只处理 `.application` 内的版本选择器，避免误伤别处
-- **间距对齐**：`alignBar()` 先把 `margin-top` 归零、量「版本下拉底边 → 按钮条顶边」的**自然间距**，再一次性算出补偿，让实际间距等于 `BAR_GAP_PX = 8px`；`padding-left` 取下拉框左沿与按钮条左沿的差值保证左对齐；`padding-bottom = BAR_BOTTOM_PX = 12px` 给下方菜单留白。算完打 `data-gld-vq-aligned` 标记，之后不再重算（只有窗口 resize 才清标记重算）
-  - v1.0.1 的坑：直接用「已生效 margin 后的实际位置」反推补偿，补偿量会被当成自然间距，每扫一次就把间距推回 0，于是上下抖动；同时按钮条把容器底部留白吃掉，下面没间距
-- **切换原理**：版本下拉是 Element UI 的 `v-show` 常驻 DOM（`ul.version-content`），条目为 `li.el-dropdown-menu__item.other-item`。按 `.item-middle .name span` 的 `title`/文本**精确匹配**版本名，先模拟 `mouseenter/mouseover` 打开下拉（走真实交互路径），再对目标 `li` 派发 `MouseEvent('click')`，由页面自身的 Vue 处理器完成切换——不改 URL、不刷新
-- **自动确认**：点条目之前先 `armAutoConfirm()` 开一个 10s 时间窗，窗内每 100ms 找可见的 `.el-message-box`，文案里带「切换」或目标版本名才动手，点 `.el-message-box__btns .el-button--primary`（确定）；一次点击只确认一次，重复点击会重置标记（弹窗节点被复用也能再确认）
-- **结果校验**：点击后等 800ms，看触发器文字是否变成目标版本、或该条目是否拿到 `select-item`/`.cur-select`，成功则静默（页面此时通常已跳转）；只有没反应时才用顶部小提示说明原因
-- **关于 `disabled`**：页面 `.el-dropdown` 上常驻 `disabled="disabled"` 属性，实测**不代表真的禁用**，因此不据此拦下；只有点击后确实无变化时才提示「页面未响应切换，可能当前禁用了版本切换（开发模式）」
-- **激活态**：顶部 `.version-select .version-num` 的文字与按钮名一致时按钮高亮（Element 蓝），每次 DOM 扫描刷新
-- **防重复注入**：`.version` 打 `data-gld-vq` 标记；按钮条被页面重绘掉时，`findBar()` 找不到会在下一次扫描里自动补回并重新对齐
-- **已知限制**：版本名按精确匹配；若页面确实在开发模式下禁用了切换（Vue 层忽略点击），脚本无法绕过；Element 版本升级改了 `version-content` / `other-item` / `el-message-box` 类名时需同步改选择器
+- **注入位置**：总览内容是 qiankun 微应用渲染在**主文档**里（不是 iframe），锚点为 `#subapp-viewport > div[id^="__qiankun_microapp_wrapper_for_open_open_component_overview"]`，版本栏插在其第一个子元素位置；只有同时找得到左侧版本选择器 `.application .version` 才注入
+- **切换原理**：仍走左侧下拉——版本下拉是 Element UI 的 `v-show` 常驻 DOM，条目为 `li.el-dropdown-menu__item.other-item`，按 `.item-middle .name span` 的 `title`/文本精确匹配；先模拟 hover 打开下拉，再对目标 `li` 派发 `MouseEvent('click')`，由页面自身 Vue 处理器完成切换
+- **自动确认**：点条目之前 `armAutoConfirm()` 开一个 10s 时间窗，窗内每 100ms 找可见的 `.el-message-box`，文案带「切换」或目标版本名才点 `.el-message-box__btns .el-button--primary`；一次点击只确认一次，重复点击重置标记（弹窗节点被复用也能再确认）
+- **结果校验**：点击后等 800ms，看触发器文字是否变成目标版本或条目拿到 `select-item`/`.cur-select`，成功则静默（页面此时通常已跳转）；只有没反应时才用顶部小提示说明原因
+- **总览页横向溢出修复**：`relaxLayout()` 遍历微应用根内的 `div/section/ul`，凡是**宽度超过可视区**（以最近的 `.el-scrollbar__wrap` 客户区为准）的容器：`min-width:0; max-width:100%`，行内 `width` 超宽的改 `100%`，flex 容器加 `flex-wrap:wrap; row-gap:16px`；打 `data-gld-relax` 标记防重复处理。`position: fixed/absolute` 的弹层和 `overflow-x: auto/scroll` 的滚动容器不动
+- **状态刷新**：每次扫描把栏内「当前版本」文字与按钮高亮同步成 `.version-select .version-num` 的值；版本栏被微应用重绘掉时，下一次扫描（MutationObserver 200ms 节流）自动补回
+- **已知限制**：版本名按精确匹配；若页面在开发模式下禁用了切换（Vue 层忽略点击），脚本无法绕过；站点升级改了 qiankun 包装 id / `version-content` / `other-item` / `el-message-box` 结构时需同步改选择器；`relaxLayout` 按宽度启发式放宽容器，若总览页新增特殊布局（如宽表格）被误换行，需微调规则
 
 ## 4. `pep-book-downloader.user.js`（v1.0.2）
 
