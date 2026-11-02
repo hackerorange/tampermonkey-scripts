@@ -8,7 +8,7 @@
 
 ---
 
-## 1. `rancher-404-redirect.user.js`（v1.2.0）
+## 1. `rancher-404-redirect.user.js`（v1.3.0）
 
 ### 1.1 背景与目标
 
@@ -27,7 +27,8 @@
 此时页面停留在错误页，无论点「Back to Home」（会去同样有问题的 `/dashboard`）还是刷新都不会自愈。目标：
 
 1. **自动救回**：出现该错误页时，自动跳到集群列表 `/g/clusters`；
-2. **统一入口**：顶部 Logo（`a.nav-logo`）与侧边 Logo（`.side-menu-logo`）原本指向 `/dashboard`，点击后同样改为去 `/g/clusters`。
+2. **统一入口**：顶部 Logo（`a.nav-logo`）与侧边 Logo（`.side-menu-logo`）原本指向 `/dashboard`，点击后同样改为去 `/g/clusters`；
+3. **日志弹窗固定**：「日志查看」弹窗内容一多，整个弹窗高度超过视口并随页面滚动，标题栏与按钮被顶出屏幕；改为固定视口大小，只让日志区内部滚动。
 
 ### 1.2 适用范围
 
@@ -49,6 +50,7 @@
 | FR-4 | 防死循环 | 同一域名 60 秒内最多跳 3 次；已在目标路径时不再跳 |
 | FR-5 | Logo 点击跳转 | 点顶部 / 侧边 Logo 一律去 `/g/clusters`，原本的 `/dashboard` 行为被覆盖 |
 | FR-6 | 不干扰正常操作 | 组合键点击、登录页、正常页面（无错误页）不受影响 |
+| FR-7 | 日志弹窗固定 | 打开「日志查看」弹窗后，弹窗始终完整落在视口内：标题栏在顶部、按钮条在底部、只有日志区可滚；关闭后背景恢复可滚 |
 
 ### 1.4 行为细则
 
@@ -90,6 +92,45 @@ DOMContentLoaded（readyState=loading 时）┘
 - **已在目标页**：不刷新，只平滑滚回页面顶部。
 - 悬停时补 `title="前往集群列表"`（同样走委托，元素重绘后仍生效）。
 
+#### 1.4.4 日志弹窗固定
+
+**结构**（Ember）：
+
+```
+.modal-overlay.modal-open
+  .modal-container.large-modal.fullscreen-modal.alert
+    .container-log
+      h2                      ← 标题「日志查看」+ 服务下拉 + 已连接状态
+      .protip                 ← 「高级技巧…」提示
+      pre.log-body            ← 日志正文（可能是几千行）
+      .footer-actions         ← 自动换行/以前的容器 + 回到顶部/回到底部/下载日志/清除屏幕/关闭
+```
+
+**问题成因**：`modal-container` 高度随日志增长（实测 1554px，视口仅 713px），且居中定位 / 随页面滚动，导致标题栏落到视口上方（实测 `top = -1120px`），用户只能看到日志和按钮。
+
+**处理**：
+
+1. 识别：`document.querySelectorAll('.modal-overlay')` 中找到含 `.container-log` 且已渲染（宽高 > 0）的那个，打标 `r404-log-overlay`；从 `.container-log` 逐级向上到 overlay 的每个节点打标 `r404-log-box`（不依赖固定层级，Ember 版本差异也能覆盖）。
+2. 布局：overlay 强制 `position: fixed` + `inset: 0` + flex 居中 + 12px 内边距；容器固定为 `min(1280px, 100vw-24px) × (100vh-24px)`；`r404-log-box` 逐层 `display:flex; flex-direction:column; min-height:0`，让高度能传到日志区。
+3. 滚动：`pre.log-body` 改为 `flex:1; overflow:auto`（覆盖 Rancher 可能写入的内联高度），日志只在框内滚。
+4. 背景锁：弹窗存在期间给 `body` 加 `r404-log-lock`（`overflow:hidden`），关闭后自动移除。
+5. 幂等：每轮扫描重复调用无副作用（有 `contains` 判断），不新增 DOM 节点，只加类名与一个 `<style>`。
+
+`footer-actions` 保留 Rancher 原样式（底部绝对定位），因为容器已被限高，它自然贴在盒子底部；改成常规流会让 `position:absolute` 的勾选组错位到标题栏上。
+
+#### 1.4.5 日志弹窗实测（模拟环境）
+
+用与真实结构一致的本地 mock（1200×800 视口、200 行日志、`pre` 内容高 6616px、页面已滚动 700px）对比：
+
+| 指标 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `.modal-container` 距视口顶部 | **-1120px**（标题栏看不见） | **12px** |
+| 容器高度 | 1554px（超出视口） | 689px（= 视口高 - 24） |
+| 标题栏位置 | 视口外 | 12px，高 50px |
+| 日志区 | 1416px，溢出屏幕 | 548px，`overflow:auto` 内部滚动 |
+| 按钮条 | 跟随内容漂移 | 固定 649px，高 52px |
+| 背景滚动 | 跟随页面滚动 | `body` 锁定 |
+
 ### 1.5 配置项（脚本顶部常量）
 
 | 常量 | 默认值 | 说明 |
@@ -100,6 +141,8 @@ DOMContentLoaded（readyState=loading 时）┘
 | `GUARD_KEY` | `rancher404Redirect` | sessionStorage 键名 |
 | `GUARD_WINDOW` | `60000` | 防死循环统计窗口（ms） |
 | `GUARD_MAX` | `3` | 窗口内最大跳转次数 |
+| `PIN_LOG_MODAL` | `true` | 是否固定日志弹窗；置 `false` 可关掉该功能 |
+| `LOG_MODAL_BOX` | `.container-log` | 判定「日志查看」弹窗的内容容器选择器 |
 | `LOG` | `[Rancher 404 跳转]` | 控制台日志前缀 |
 
 ### 1.6 运行时状态
@@ -109,15 +152,17 @@ DOMContentLoaded（readyState=loading 时）┘
 | `handled` | 内存 | 单页 | 已处理（已跳转或已放弃）则为 true，后续扫描直接短路 |
 | `settleTimer` | 内存 | 单页 | 复核定时器句柄，避免重复排程 |
 | 防死循环记录 | `sessionStorage` | 单标签页 | `{ host, ts, count }`；`host` 不同或 `now - ts > GUARD_WINDOW` 时重置计数 |
+| `r404-log-overlay` / `r404-log-box` / `r404-log-lock` | DOM 类名 | 弹窗存续期间 | 分别标记弹窗遮罩、布局盒子链、`body` 滚动锁；弹窗关闭后无需清理（节点随弹窗一起销毁） |
 
 `sessionStorage` 按标签页隔离，多个标签页各自计数、互不影响；隐私模式写入失败时静默降级（仅失去计数能力，不影响跳转）。
 
 ### 1.7 非功能要求
 
 - 零依赖、零构建，单文件可直接安装。
-- 不修改页面结构：唯一 DOM 写入是临时提示条（4s 后移除）与 Logo 的 `title` 属性。
+- DOM 写入仅限：临时提示条（4s 后移除）、Logo 的 `title` 属性、一个 `<style>` 标签、弹窗相关节点上的类名（不改结构、不移动节点）。
 - 不拦截网络请求，不读写 Cookie / localStorage，不采集页面内容。
 - 空闲时无定时器：1s 轮询仅在前 60 秒运行，之后只靠 MutationObserver。
+- 日志流式刷新（每秒几十次 DOM 变更）下，扫描按 120ms 节流合并，避免逐行触发。
 
 ### 1.8 边界与已知限制
 
@@ -129,6 +174,10 @@ DOMContentLoaded（readyState=loading 时）┘
 | Rancher 升级改了 Logo 类名 | Logo 跳转失效，改 `LOGO_SELECTOR` 即可 |
 | 站内 SPA 跳转 | `location.assign` / `replace` 会整页重载（数百毫秒到数秒），换取 100% 可靠 |
 | 未登录 | 不特殊处理，由 Rancher 自行跳登录页 |
+| 日志弹窗关闭 | 扫描到 overlay 已不可见即移除 `body` 锁；Ember 直接销毁节点也成立 |
+| 非日志类弹窗 | 不含 `.container-log` 的弹窗不受影响，仍用 Rancher 原生布局 |
+| Rancher 给 `.footer-actions` 改结构 | 固定效果仍在（高度由容器限制），但若按钮条改为常规流后与日志重叠，需要补 `padding-bottom` |
+| 弹窗内点「下载日志」等按钮 | 不受影响，脚本只改布局不改事件 |
 
 ### 1.9 验收清单（手动）
 
@@ -144,6 +193,10 @@ DOMContentLoaded（readyState=loading 时）┘
 | 8 | `Ctrl` / `Cmd` + 点 Logo | 不拦截（能新标签页打开则照常） |
 | 9 | 三个域名各测一次，http 与 https 均访问 | 行为一致 |
 | 10 | 正常集群列表页停留 1 分钟 | 无误跳，控制台无报错 |
+| 11 | 打开某 pod 的「日志查看」，日志很长 | 弹窗完整在视口内：标题栏在顶部、按钮在底部，只有日志区可滚 |
+| 12 | 在弹窗内滚轮 / 拖动 | 日志内部滚动，背景页面不动 |
+| 13 | 关闭弹窗后滚动页面 | 背景恢复可滚 |
+| 14 | 打开普通确认弹窗（无 `.container-log`） | 布局与原生一致，未被改动 |
 
 ### 1.10 版本历史
 
@@ -152,6 +205,7 @@ DOMContentLoaded（readyState=loading 时）┘
 | 1.0.0 | 错误页识别 + 自动跳 `/g/clusters`；500ms 复核；防死循环；提示条 |
 | 1.1.0 | 顶部 Logo（`a.nav-logo`）点击改为跳集群列表，捕获阶段委托，放行组合键与登录页 |
 | 1.2.0 | 选择器扩展为 `a.nav-logo, .side-menu-logo`，侧边 Logo 同样生效；日志区分入口 |
+| 1.3.0 | 新增日志弹窗固定：overlay 固定视口、容器限高、日志区内部滚动、背景滚动锁；`PIN_LOG_MODAL` 可开关 |
 
 ---
 

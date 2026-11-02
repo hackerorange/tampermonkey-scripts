@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达 Rancher · 404 页面自动跳转集群列表
 // @namespace    zhongct.glodon.rancher.redirect
-// @version      1.2.0
-// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；支持 rancher / rancher-sg / rancher-pri 三个环境。带延迟判定、防抖与防死循环保护。
+// @version      1.3.0
+// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；日志弹窗固定为视口大小（标题与按钮不再被滚出屏幕）。支持 rancher / rancher-sg / rancher-pri 三个环境。
 // @author       zhongct
 // @match        *://rancher.glodon.com/*
 // @match        *://rancher-sg.glodon.com/*
@@ -27,6 +27,11 @@
   const GUARD_KEY = 'rancher404Redirect';
   const GUARD_WINDOW = 60000;            // 防死循环窗口：60 秒内
   const GUARD_MAX = 3;                   // 最多跳转 3 次，仍失败则停手，交给人处理
+  const PIN_LOG_MODAL = true;            // 日志弹窗固定为视口大小（标题栏/按钮不再被长日志顶出屏幕）
+  const LOG_MODAL_BOX = '.container-log'; // 日志弹窗的内容容器，命中即认为是「日志查看」弹窗
+  const LOG_BOX_CLASS = 'r404-log-box';
+  const LOG_OVERLAY_CLASS = 'r404-log-overlay';
+  const LOG_LOCK_CLASS = 'r404-log-lock';
   const LOG = '[Rancher 404 跳转]';
 
   let handled = false;   // 本次页面生命周期内是否已处理（跳转或已放弃）
@@ -214,13 +219,123 @@
     }, true);
   }
 
+  // ============ 日志弹窗固定 ============
+  // Rancher「日志查看」弹窗结构（Ember）：
+  //   .modal-overlay.modal-open > .modal-container.large-modal.fullscreen-modal
+  //     > .container-log > h2(标题+服务选择+状态) / .protip / pre.log-body / .footer-actions(按钮)
+  // 问题：日志内容很长时弹窗整体高度超过视口，弹窗跟着页面一起滚，标题栏和按钮被顶出屏幕。
+  // 处理：弹窗钉成视口内的定尺盒子，只让 pre.log-body 内部滚动；并锁住背景滚动。
+  function injectLogModalStyle() {
+    if (document.getElementById('r404-log-modal-style')) return;
+    const css = `
+      body.${LOG_LOCK_CLASS} { overflow: hidden !important; }
+
+      .modal-overlay.${LOG_OVERLAY_CLASS} {
+        position: fixed !important;
+        top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
+        width: 100% !important; height: 100% !important;
+        margin: 0 !important;
+        padding: 12px !important;
+        box-sizing: border-box !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        overflow: hidden !important;
+      }
+
+      /* overlay → .container-log 之间的每一层都改成纵向 flex，高度才能逐层传下去 */
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${LOG_BOX_CLASS} {
+        display: flex !important;
+        flex-direction: column !important;
+        min-height: 0 !important;
+        overflow: hidden !important;
+        margin: 0 !important;
+        box-sizing: border-box !important;
+      }
+
+      .modal-overlay.${LOG_OVERLAY_CLASS} .modal-container {
+        position: relative !important;
+        top: auto !important; left: auto !important; right: auto !important; bottom: auto !important;
+        transform: none !important;
+        margin: 0 !important;
+        width: min(1280px, calc(100vw - 24px)) !important;
+        max-width: calc(100vw - 24px) !important;
+        height: calc(100vh - 24px) !important;
+        max-height: calc(100vh - 24px) !important;
+      }
+
+      /* 容器自身可能被 Rancher 写成固定高度，这里让 flex 接管 */
+      .modal-overlay.${LOG_OVERLAY_CLASS} .container-log {
+        flex: 1 1 auto !important;
+        height: auto !important;
+        max-height: 100% !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} .container-log > h2 { flex: 0 0 auto !important; }
+      .modal-overlay.${LOG_OVERLAY_CLASS} .protip { flex: 0 0 auto !important; }
+
+      /* 只有日志体自己滚 */
+      .modal-overlay.${LOG_OVERLAY_CLASS} pre.log-body {
+        flex: 1 1 auto !important;
+        height: auto !important;
+        max-height: none !important;
+        min-height: 0 !important;
+        margin: 0 !important;
+        overflow: auto !important;
+      }
+
+      /* 按钮条保持 Rancher 原样式（底部绝对定位 + 内部绝对定位的勾选组），
+         容器已被限高，它自然贴在盒子底部，不会跟着长日志跑掉 */
+      .modal-overlay.${LOG_OVERLAY_CLASS} .footer-actions { flex: 0 0 auto !important; }
+    `;
+    const style = document.createElement('style');
+    style.id = 'r404-log-modal-style';
+    style.textContent = css;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function isRendered(el) {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+
+  function pinLogModals() {
+    if (!PIN_LOG_MODAL || !document.body) return;
+    injectLogModalStyle();
+    let open = 0;
+    document.querySelectorAll('.modal-overlay').forEach((overlay) => {
+      const log = overlay.querySelector(LOG_MODAL_BOX);
+      if (!log || !isRendered(overlay)) return;
+      open++;
+      if (!overlay.classList.contains(LOG_OVERLAY_CLASS)) {
+        overlay.classList.add(LOG_OVERLAY_CLASS);
+        console.log(LOG, '已固定日志弹窗（仅日志区内部滚动）');
+      }
+      // 从 .container-log 一路往上到 overlay 都打上盒子标记，避免依赖固定层级
+      let el = log;
+      while (el && el !== overlay) {
+        if (!el.classList.contains(LOG_BOX_CLASS)) el.classList.add(LOG_BOX_CLASS);
+        el = el.parentElement;
+      }
+    });
+    // 弹窗关掉后恢复背景滚动
+    const shouldLock = open > 0;
+    if (document.body.classList.contains(LOG_LOCK_CLASS) !== shouldLock) {
+      document.body.classList.toggle(LOG_LOCK_CLASS, shouldLock);
+    }
+  }
+
   // ============ 监听（SPA 会随时重绘，不重载页面也可能突然变成错误页）============
   let throttleTimer = null;
+  function scan() {
+    check();          // 404 错误页
+    pinLogModals();   // 日志弹窗固定
+  }
+
   function scheduleCheck() {
-    if (throttleTimer || handled) return;
+    if (throttleTimer) return;
     throttleTimer = setTimeout(() => {
       throttleTimer = null;
-      check();
+      scan();
     }, 120);
   }
 
@@ -235,16 +350,16 @@
   }
 
   // 兜底轮询：某些场景（字体/水合完成后才插入）观察器可能错过首次绘制
-  const pollTimer = setInterval(check, 1000);
+  const pollTimer = setInterval(scan, 1000);
   setTimeout(() => clearInterval(pollTimer), 60000);
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', check, { once: true });
+    document.addEventListener('DOMContentLoaded', scan, { once: true });
   } else {
-    check();
+    scan();
   }
   observe();
   bindLogoClick();
 
-  console.log(LOG, '已启动：404 错误页自动跳转 + 顶部 Logo 点击跳转 ' + REDIRECT_PATH);
+  console.log(LOG, '已启动：404 自动跳转 + Logo 跳转 + 日志弹窗固定');
 })();
