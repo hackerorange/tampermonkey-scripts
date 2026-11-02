@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达开发者控制台-版本快速切换
 // @namespace    zhongct.glodon.console.version.quick
-// @version      1.3.0
-// @description  把应用详情页右侧「总览」改成快捷链接页：版本（release / release-pre）与常用功能（构建管理、版本发布）做成带图标的大方块；点版本直接切换（Vue 层拦截，不再弹确认框）。
+// @version      1.3.1
+// @description  把应用详情页右侧「总览」改成快捷链接页：版本（release / release-pre）与常用功能（构建管理、版本发布）做成带图标的大方块；点版本直接切换（Vue 同步拦截，弹窗不再闪现），切页签回来也不闪旧页面。
 // @author       zhongct
 // @match        https://console.developer.glodon.com/*
 // @grant        none
@@ -89,6 +89,7 @@
     style.id = 'gld-vq-style';
     style.textContent = `
       #${QUICK_ID} { padding: 32px 40px 24px; font-size: 14px; color: #262626; box-sizing: border-box; }
+      #subapp-viewport > div[id^="__qiankun_microapp_wrapper_for_open_open_component_overview"] > *:not(qiankun-head):not(#${QUICK_ID}) { display: none !important; }
       #${QUICK_ID} .gld-qp-hd {
         font-size: 16px; font-weight: 600; color: #262626;
         margin: 0 0 22px; padding-left: 2px;
@@ -155,12 +156,14 @@
     const vm = findSwitchVM(panel);
     if (!vm || vm.__gldHooked) return;
     vm.__gldHooked = true;
+    // 必须 sync：默认异步 watcher 的回调要排在组件渲染 watcher 之后（渲染 watcher 先创建、
+    // id 更小），弹窗会先画出来再被关掉；sync watcher 在 setter 里立即执行，弹窗来不及渲染。
     vm.$watch('versionDialogVisible', (v) => {
       if (!v || vm.versionFlag !== 'change') return;
       const name = vm.curVersionObj && vm.curVersionObj.version;
       console.log(LOG, '已在 Vue 层拦截确认弹窗，直接切换 →', name);
       try { vm.handelClickEnterVersion(); } catch (e) { console.warn(LOG, 'Vue 层切换失败', e); }
-    });
+    }, { sync: true });
   }
 
   // ---------- 自动确认切换弹窗（Vue 层 hook 失效时的 DOM 兜底） ----------
@@ -515,7 +518,15 @@
   function init() {
     injectStyle();
     scan();
-    const observer = new MutationObserver(scheduleScan);
+    const observer = new MutationObserver(() => {
+      // 总览面板不在了（微应用重挂/重绘）：立即补，不等节流，避免闪旧页面
+      const wrap = document.querySelector(OVERVIEW_SELECTOR);
+      if (wrap && !wrap.querySelector(':scope > #' + QUICK_ID)) {
+        scan();
+        return;
+      }
+      scheduleScan();
+    });
     observer.observe(document.body, { childList: true, subtree: true });
     window.addEventListener('resize', scheduleScan);
     console.log(LOG, '已启动：总览页快捷链接 →', TARGETS.join(' / '),
