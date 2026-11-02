@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         人教教材阅读器 · 下载助手
 // @namespace    pep-book-downloader
-// @version      1.0.1
+// @version      1.0.2
 // @description  在人教教材在线阅读器底部工具栏加一个「下载」按钮，点击后弹窗显示进度，自动抓取全部页面、去水印并打包 ZIP 下载。仅供个人学习使用。
 // @author       hackerorange
 // @match        https://book.pep.com.cn/*
