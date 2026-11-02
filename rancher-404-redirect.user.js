@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达 Rancher · 404 页面自动跳转集群列表
 // @namespace    zhongct.glodon.rancher.redirect
-// @version      1.1.0
-// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部 Logo(a.nav-logo) 点击也跳到集群列表；支持 rancher / rancher-sg / rancher-pri 三个环境。带延迟判定、防抖与防死循环保护。
+// @version      1.2.0
+// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；支持 rancher / rancher-sg / rancher-pri 三个环境。带延迟判定、防抖与防死循环保护。
 // @author       zhongct
 // @match        *://rancher.glodon.com/*
 // @match        *://rancher-sg.glodon.com/*
@@ -22,7 +22,7 @@
 
   // ============ 配置 ============
   const REDIRECT_PATH = '/g/clusters';   // 出错后跳转的目标路径
-  const LOGO_SELECTOR = 'a.nav-logo';    // 顶部 Rancher Logo（点它原本会去 /dashboard，这里改成去集群列表）
+  const LOGO_SELECTOR = 'a.nav-logo, .side-menu-logo'; // 顶部 / 侧边 Rancher Logo，点它原本去 /dashboard，这里改成去集群列表
   const SETTLE_MS = 500;                 // 检测到错误页后再等这么久，避免瞬时渲染误判
   const GUARD_KEY = 'rancher404Redirect';
   const GUARD_WINDOW = 60000;            // 防死循环窗口：60 秒内
@@ -173,8 +173,9 @@
     }, SETTLE_MS);
   }
 
-  // ============ 顶部 Logo 点击 → 集群列表 ============
-  // Rancher 顶部 Logo：<a class="nav-logo logo-oss btn bg-transparent"><span class="sr-only">Rancher</span></a>
+  // ============ Logo 点击 → 集群列表 ============
+  // 顶部：<a class="nav-logo logo-oss btn bg-transparent"><span class="sr-only">Rancher</span></a>
+  // 侧边：<div class="side-menu-logo"><img class="side-menu-logo-img" src="/dashboard/img/rancher-logo.xxx.svg"></div>
   // 默认点击会去 /dashboard（有时就是那个会 404 的页面），这里统一改成去 /g/clusters。
   function goToClusters(from) {
     if (isAlreadyTarget()) {
@@ -202,7 +203,8 @@
       if (!a) return;
       e.preventDefault();
       e.stopPropagation();
-      goToClusters('点击顶部 Logo');
+      const label = a.classList.contains('side-menu-logo') ? '点击侧边 Logo' : '点击顶部 Logo';
+      goToClusters(label);
     }, true);
 
     // 顺手加个悬停提示（元素可能重绘，同样走委托）
