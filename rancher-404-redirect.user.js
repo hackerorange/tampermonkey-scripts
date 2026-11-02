@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         广联达 Rancher · 404 页面自动跳转集群列表
 // @namespace    zhongct.glodon.rancher.redirect
-// @version      1.3.0
+// @version      1.3.1
 // @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；日志弹窗固定为视口大小（标题与按钮不再被滚出屏幕）。支持 rancher / rancher-sg / rancher-pri 三个环境。
 // @author       zhongct
 // @match        *://rancher.glodon.com/*
@@ -258,8 +258,9 @@
         top: auto !important; left: auto !important; right: auto !important; bottom: auto !important;
         transform: none !important;
         margin: 0 !important;
-        width: min(1280px, calc(100vw - 24px)) !important;
-        max-width: calc(100vw - 24px) !important;
+        /* 铺满 overlay 的内容区：左右不留额外空白，四边等距 12px */
+        width: 100% !important;
+        max-width: 100% !important;
         height: calc(100vh - 24px) !important;
         max-height: calc(100vh - 24px) !important;
       }

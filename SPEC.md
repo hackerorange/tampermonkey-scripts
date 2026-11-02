@@ -8,7 +8,7 @@
 
 ---
 
-## 1. `rancher-404-redirect.user.js`（v1.3.0）
+## 1. `rancher-404-redirect.user.js`（v1.3.1）
 
 ### 1.1 背景与目标
 
@@ -111,7 +111,7 @@ DOMContentLoaded（readyState=loading 时）┘
 **处理**：
 
 1. 识别：`document.querySelectorAll('.modal-overlay')` 中找到含 `.container-log` 且已渲染（宽高 > 0）的那个，打标 `r404-log-overlay`；从 `.container-log` 逐级向上到 overlay 的每个节点打标 `r404-log-box`（不依赖固定层级，Ember 版本差异也能覆盖）。
-2. 布局：overlay 强制 `position: fixed` + `inset: 0` + flex 居中 + 12px 内边距；容器固定为 `min(1280px, 100vw-24px) × (100vh-24px)`；`r404-log-box` 逐层 `display:flex; flex-direction:column; min-height:0`，让高度能传到日志区。
+2. 布局：overlay 强制 `position: fixed` + `inset: 0` + flex 居中 + 12px 内边距；容器铺满 overlay 内容区（`width/max-width: 100%`，即 `100vw - 24px`）× `(100vh - 24px)`，四边留白都是 12px；`r404-log-box` 逐层 `display:flex; flex-direction:column; min-height:0`，让高度能传到日志区。
 3. 滚动：`pre.log-body` 改为 `flex:1; overflow:auto`（覆盖 Rancher 可能写入的内联高度），日志只在框内滚。
 4. 背景锁：弹窗存在期间给 `body` 加 `r404-log-lock`（`overflow:hidden`），关闭后自动移除。
 5. 幂等：每轮扫描重复调用无副作用（有 `contains` 判断），不新增 DOM 节点，只加类名与一个 `<style>`。
@@ -130,6 +130,7 @@ DOMContentLoaded（readyState=loading 时）┘
 | 日志区 | 1416px，溢出屏幕 | 548px，`overflow:auto` 内部滚动 |
 | 按钮条 | 跟随内容漂移 | 固定 649px，高 52px |
 | 背景滚动 | 跟随页面滚动 | `body` 锁定 |
+| 四边留白（1920×913 视口实测） | 容器 1554px 高、左右随宽度变化 | 左/右/上/下均 **12px**，容器 1896×889 |
 
 ### 1.5 配置项（脚本顶部常量）
 
@@ -206,6 +207,7 @@ DOMContentLoaded（readyState=loading 时）┘
 | 1.1.0 | 顶部 Logo（`a.nav-logo`）点击改为跳集群列表，捕获阶段委托，放行组合键与登录页 |
 | 1.2.0 | 选择器扩展为 `a.nav-logo, .side-menu-logo`，侧边 Logo 同样生效；日志区分入口 |
 | 1.3.0 | 新增日志弹窗固定：overlay 固定视口、容器限高、日志区内部滚动、背景滚动锁；`PIN_LOG_MODAL` 可开关 |
+| 1.3.1 | 弹窗宽度铺满：去掉 1280px 上限，四边留白统一 12px（原左右空白偏大） |
 
 ---
 
