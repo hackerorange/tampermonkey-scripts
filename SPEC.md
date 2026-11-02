@@ -227,20 +227,22 @@ DOMContentLoaded（readyState=loading 时）┘
 - **调试**：控制台执行 `__gldStarDebug()` 打印每个菜单项的「菜单名 / 收藏键 / 是否已收藏 / 星标中心 / 箭头中心 / 差值 / 定位方式」，便于核对
 - **已知限制**：只看菜单名，所以**不同父级下的同名菜单会被视为同一项**（一起点亮）；菜单改名等于新菜单（旧名字的记录保留但不再匹配）；不做跨浏览器/跨设备同步；若某级菜单标题里没有箭头类图标，会退回固定留白
 
-## 3. `glodon-console-version-switch.user.js`（v1.1.0）
+## 3. `glodon-console-version-switch.user.js`（v1.2.0）
 
-**作用**：在开发者控制台应用详情页右侧「总览」页顶部加一条版本栏（当前版本 + release / release-pre 快捷按钮），点击后自动在左侧版本下拉里切换并自动确认页面弹窗、直接跳转；同时把总览页横向溢出的内容（5 阶段步骤条、学习卡片）改成自适应换行，不再被右边裁掉。
+**作用**：把开发者控制台应用详情页右侧「总览」改造成一个**快捷链接页**——页面上只剩两组带图标的大方块：`版本`（release / release-pre）与 `常用功能`（构建管理、版本发布）。点版本方块会自动在左侧版本下拉里切换、自动确认页面弹窗并直接跳转；点常用功能方块等于点左侧对应菜单。
 
 - **站点**：`https://console.developer.glodon.com/*`
-- **v1.1.0 变更**：按钮从「侧栏下拉框下方」整体搬到「总览页顶部」，侧栏恢复站点原样（v1.0.x 的间距对齐/抖动问题随之不复存在）
-- **按钮来源**：脚本顶部 `TARGETS = ['release', 'release-pre']`，数组顺序即按钮顺序，可增删版本名
-- **注入位置**：总览内容是 qiankun 微应用渲染在**主文档**里（不是 iframe），锚点为 `#subapp-viewport > div[id^="__qiankun_microapp_wrapper_for_open_open_component_overview"]`，版本栏插在其第一个子元素位置；只有同时找得到左侧版本选择器 `.application .version` 才注入
-- **切换原理**：仍走左侧下拉——版本下拉是 Element UI 的 `v-show` 常驻 DOM，条目为 `li.el-dropdown-menu__item.other-item`，按 `.item-middle .name span` 的 `title`/文本精确匹配；先模拟 hover 打开下拉，再对目标 `li` 派发 `MouseEvent('click')`，由页面自身 Vue 处理器完成切换
-- **自动确认**：点条目之前 `armAutoConfirm()` 开一个 10s 时间窗，窗内每 100ms 找可见的 `.el-message-box`，文案带「切换」或目标版本名才点 `.el-message-box__btns .el-button--primary`；一次点击只确认一次，重复点击重置标记（弹窗节点被复用也能再确认）
-- **结果校验**：点击后等 800ms，看触发器文字是否变成目标版本或条目拿到 `select-item`/`.cur-select`，成功则静默（页面此时通常已跳转）；只有没反应时才用顶部小提示说明原因
-- **总览页横向溢出修复**：`relaxLayout()` 遍历微应用根内的 `div/section/ul`，凡是**宽度超过可视区**（以最近的 `.el-scrollbar__wrap` 客户区为准）的容器：`min-width:0; max-width:100%`，行内 `width` 超宽的改 `100%`，flex 容器加 `flex-wrap:wrap; row-gap:16px`；打 `data-gld-relax` 标记防重复处理。`position: fixed/absolute` 的弹层和 `overflow-x: auto/scroll` 的滚动容器不动
-- **状态刷新**：每次扫描把栏内「当前版本」文字与按钮高亮同步成 `.version-select .version-num` 的值；版本栏被微应用重绘掉时，下一次扫描（MutationObserver 200ms 节流）自动补回
-- **已知限制**：版本名按精确匹配；若页面在开发模式下禁用了切换（Vue 层忽略点击），脚本无法绕过；站点升级改了 qiankun 包装 id / `version-content` / `other-item` / `el-message-box` 结构时需同步改选择器；`relaxLayout` 按宽度启发式放宽容器，若总览页新增特殊布局（如宽表格）被误换行，需微调规则
+- **v1.2.0 变更**：总览页原有内容（标题、5 阶段步骤条、学习卡片、帮助中心链接）整块隐藏，改为快捷链接面板；版本从「顶部一条栏」改成「大方块」；修复「点了 release 成功后，再点提示版本不存在」
+- **方块配置**：版本取顶部 `TARGETS = ['release', 'release-pre']`；常用功能取 `SHORTCUTS = [{ label: '构建管理', icon: 'tool', url: '/portal/740894248948736/' }, { label: '版本发布', icon: 'rocket', url: '/portal/645701652762624/' }]`，`label` 与左侧菜单文字精确匹配，`url` 只在菜单点不到时兜底
+- **注入位置**：总览内容是 qiankun 微应用渲染在**主文档**里（不是 iframe），锚点 `#subapp-viewport > div[id^="__qiankun_microapp_wrapper_for_open_open_component_overview"]`；面板 `#gld-quick-links` 追加为包装节点最后一个子元素，其余子元素（除 `<qiankun-head>`，它承载微应用样式）一律 `display:none`
+- **切换原理**：仍走左侧下拉——条目为 `li.el-dropdown-menu__item`，匹配 `.item-middle .name span` 的 `title`/文本，规则为「精确相等」或「以 `name(` / `name（` 开头」（兼容 `release(0.2)` 这种带构建号的形式，且不会把 `release-pre` 误判成 `release`）；命中后对 `li` 派发 `MouseEvent('click')`，由页面自身 Vue 处理器完成切换
+- **「版本不存在」修复**（v1.2.0）：
+  - 版本列表有可能会等下拉打开后才渲染/异步拉取，`waitVersionItem()` 改成最多 8 轮、每轮 250ms 重试，每轮补发 `mouseenter/mouseover/mousemove`，第 3、6 轮再补一次点击，最后全文档兜底查找
+  - 切换成功后**当前版本会从下拉列表里消失**，再点同一版本必然找不到；因此入口处先比对 `.version-select .version-num`，已经是该版本就直接返回（只刷新方块状态，不弹任何提示）
+- **自动确认**：点条目之前 `armAutoConfirm()` 开 10s 时间窗，窗内每 100ms 找可见的 `.el-message-box`，文案带「切换」或目标版本名才点 `.el-message-box__btns .el-button--primary`；一次点击只确认一次，重复点击重置标记（弹窗节点复用也能再确认）
+- **常用功能跳转**：`openMenu()` 按文字找 `li[role="menuitem"] / .el-menu-item / a` 并派发点击（走站点自身的页签导航）；只有找不到该菜单时才把当前 URL 的 pathname 换成配置里的兜底地址（保留 query），避免在正常点击后再强行刷新
+- **状态刷新**：每次扫描把当前版本对应的方块加 `is-current` + 右上角「当前」角标；方块组被微应用重绘掉时，下一次扫描（MutationObserver 200ms 节流）自动补回，不会重复注入
+- **已知限制**：版本名匹配规则较严（不做模糊匹配）；若页面在开发模式下禁用了切换（Vue 层忽略点击），脚本无法绕过；站点升级改了 qiankun 包装 id / 菜单结构 / `el-message-box` 结构时需同步改选择器；总览页原有内容被隐藏属于**结构性改动**，站点改版后需要复核
 
 ## 4. `pep-book-downloader.user.js`（v1.0.2）
 
