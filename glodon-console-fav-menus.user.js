@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达开发者控制台-常用菜单标记
 // @namespace    zhongct.glodon.console.favorites
-// @version      1.4.0
-// @description  在左侧菜单(.left-menu)最末级菜单项最右侧添加星星，点击标记常用菜单；未收藏时悬停才显示空心星；收藏后菜单文字变黄；星标按上级折叠箭头的实际中心自动对齐；收藏按「菜单名」记录（与层级、顺序无关），旧版层级路径记录会自动迁移；记录持久化在本机（Tampermonkey 用户目录存储）。
+// @version      1.4.1
+// @description  在左侧菜单(.left-menu)最末级菜单项最右侧添加星星，点击标记常用菜单；未收藏时悬停才显示空心星；收藏后菜单文字与星标为橙红色；星标按上级折叠箭头的实际中心自动对齐；收藏按「菜单名」记录（与层级、顺序无关），旧版层级路径记录会自动迁移；记录持久化在本机（Tampermonkey 用户目录存储）。
 // @author       zhongct
 // @match        https://console.developer.glodon.com/*
 // @grant        GM_getValue
@@ -24,7 +24,7 @@
   const ACTIVE_CLASS = 'gld-fav-active';
   const MARKED_CLASS = 'gld-fav-marked';
   const ABS_CLASS = 'gld-fav-star-abs';
-  const GOLD = '#f7ba2a';
+  const ACTIVE_COLOR = '#ff5722';   // 橙红，鲜艳醒目
   const GRAY = '#c0c4cc';
   const STAR_RIGHT_PX = 20;   // 兜底：找不到折叠箭头时，星标右侧留白
 
@@ -141,7 +141,7 @@
         opacity: 1;
       }
       .left-menu li.el-menu-item.${MARKED_CLASS} > span {
-        color: ${GOLD};
+        color: ${ACTIVE_COLOR};
         font-weight: 600;
       }
     `;
@@ -271,8 +271,8 @@
 
     function render(isActive) {
       if (isActive) {
-        path.setAttribute('fill', GOLD);
-        path.setAttribute('stroke', GOLD);
+        path.setAttribute('fill', ACTIVE_COLOR);
+        path.setAttribute('stroke', ACTIVE_COLOR);
         star.title = '取消常用标记：' + (star._gldKey || '');
       } else {
         path.setAttribute('fill', 'none');

@@ -213,7 +213,7 @@ DOMContentLoaded（readyState=loading 时）┘
 
 ## 2. `glodon-console-fav-menus.user.js`（v1.4.0）
 
-**作用**：在开发者控制台左侧菜单（`div.left-menu`）的末级菜单项右侧加星星，点星星标记为常用；未收藏时悬停才显示空心星，收藏后菜单文字变黄。
+**作用**：在开发者控制台左侧菜单（`div.left-menu`）的末级菜单项右侧加星星，点星星标记为常用；未收藏时悬停才显示空心星，收藏后星标与菜单文字变为橙红色（`ACTIVE_COLOR = #ff5722`，可改常量换色）。
 
 - **站点**：`https://console.developer.glodon.com/*`
 - **存储**：`GM_setValue('gld_console_fav_menus', [...])`，存的是**菜单名数组**（如 `["日志查询", "数据库运维"]`）。主键是末级菜单自己的文字，与该菜单在树里的层级、顺序、父级标题都无关——菜单换位置、上级改名都不影响已收藏项
