@@ -26,8 +26,6 @@
   const BOTTOM_SAME_RATIO = 0.95;
   const BOTTOM_TOL = 64;
 
-  console.log("download!!!")
-
   // ===== 全局状态（页面不刷新则缓存一直有效，可断点续传）=====
   let cache = null;          // Array<Blob|null>，下标 = 页码
   let running = false;       // 防止重复点击并发运行
