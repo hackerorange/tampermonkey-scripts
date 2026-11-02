@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达开发者控制台-版本快速切换
 // @namespace    zhongct.glodon.console.version.quick
-// @version      1.2.0
-// @description  把应用详情页右侧「总览」改成快捷链接页：版本（release / release-pre）与常用功能（构建管理、版本发布）做成带图标的大方块；点版本自动切换并自动确认弹窗、直接跳转。
+// @version      1.2.1
+// @description  把应用详情页右侧「总览」改成快捷链接页：版本（release / release-pre）与常用功能（构建管理、版本发布）做成带图标的大方块；点版本自动切换并自动点掉确认弹窗、直接跳转。
 // @author       zhongct
 // @match        https://console.developer.glodon.com/*
 // @grant        none
@@ -88,7 +88,7 @@
     const style = document.createElement('style');
     style.id = 'gld-vq-style';
     style.textContent = `
-      #${QUICK_ID} { padding: 28px 0 8px; font-size: 14px; color: #262626; }
+      #${QUICK_ID} { padding: 32px 40px 24px; font-size: 14px; color: #262626; box-sizing: border-box; }
       #${QUICK_ID} .gld-qp-hd {
         font-size: 16px; font-weight: 600; color: #262626;
         margin: 0 0 22px; padding-left: 2px;
@@ -140,54 +140,88 @@
   // ---------- 自动确认切换弹窗 ----------
   // 页面在点到版本条目后会弹 Element UI 的 MessageBox「你将切换到 xxx，是否继续」，
   // 这里在点击后的一小段时间窗内自动点「确定」，做到点了就跳转。
-  let confirmDeadline = 0;
-  let confirmTarget = '';
-  let confirmDone = false;
+  // 关键：点一次没关掉要接着点（主题/动画/遮罩都可能让首次派发的 click 落空），
+  // 一次不成便永久放弃是 v1.2.0 弹窗仍在的根因。
+  let confirmState = null;
   let confirmTimer = null;
 
   function armAutoConfirm(name) {
-    confirmTarget = name;
-    confirmDone = false;            // 每次点击重置，弹窗节点被复用也能再确认一次
-    confirmDeadline = Date.now() + CONFIRM_WINDOW_MS;
+    confirmState = { target: name, until: Date.now() + CONFIRM_WINDOW_MS, tries: 0, lastAt: 0 };
     if (confirmTimer) return;
-    confirmTimer = setInterval(() => {
-      if (!confirmDeadline || Date.now() > confirmDeadline) {
-        clearInterval(confirmTimer);
-        confirmTimer = null;
-        return;
-      }
-      tryAutoConfirm();
-    }, 100);
+    confirmTimer = setInterval(confirmTick, 120);
+  }
+
+  function stopConfirmLoop() {
+    if (!confirmTimer) return;
+    clearInterval(confirmTimer);
+    confirmTimer = null;
+  }
+
+  function isVisible(el) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
   }
 
   function visibleMessageBox() {
-    const wraps = document.querySelectorAll('.el-message-box__wrapper, .el-message-box');
-    for (const el of wraps) {
-      const box = el.classList.contains('el-message-box') ? el : el.querySelector('.el-message-box');
-      if (!box) continue;
-      const wrap = box.parentElement;
+    const boxes = document.querySelectorAll('.el-message-box, .el-dialog[role="dialog"], .el-dialog');
+    for (const box of boxes) {
+      // 弹窗可能在隐藏状态（站点把它常驻在 body 里），跳过
+      const wrap = box.closest('.el-message-box__wrapper, .el-overlay, .el-dialog__wrapper') || box.parentElement;
       if (wrap && wrap.style && wrap.style.display === 'none') continue;
-      if (box.getBoundingClientRect().height === 0) continue;   // 还在收起态
+      if (!isVisible(box)) continue;
       return box;
     }
     return null;
   }
 
-  function tryAutoConfirm() {
-    if (!confirmDeadline || confirmDone || Date.now() > confirmDeadline) return;
+  // 只对「切换版本」的确认框动手，避免误点其它弹窗
+  function isSwitchConfirm(text, target) {
+    if (!text) return false;
+    if (text.indexOf('切换') >= 0) return true;
+    if (!target || text.indexOf(target) < 0) return false;
+    return /是否继续|确认|确定/.test(text);
+  }
+
+  function confirmButton(box) {
+    const primary = box.querySelector('.el-button--primary');
+    if (isVisible(primary)) return primary;
+    const btns = Array.from(box.querySelectorAll('.el-message-box__btns button, .el-dialog__footer button, button'));
+    for (const b of btns) {
+      if (/^(确定|确认|继续|是)$/.test(normalize(b.textContent)) && isVisible(b)) return b;
+    }
+    return null;
+  }
+
+  // 完整鼠标事件序列：只发 click 有时会被主题的 mousedown 逻辑拦掉；
+  // 但不要再额外调 el.click()，否则一次 tick 会连发两次点击、可能重复提交。
+  function fireClick(el) {
+    ['mousedown', 'mouseup', 'click'].forEach((t) => {
+      el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window }));
+    });
+  }
+
+  function confirmTick() {
+    const st = confirmState;
+    if (!st) { stopConfirmLoop(); return; }
+    if (Date.now() > st.until || st.tries >= 6) {
+      // 时间窗内没成功就不再管，避免残留轮询
+      if (st.tries === 0) console.warn(LOG, '时间窗内没等到切换确认弹窗');
+      confirmState = null;
+      stopConfirmLoop();
+      return;
+    }
     const box = visibleMessageBox();
     if (!box) return;
     const text = normalize(box.textContent);
-    // 只对「切换版本」的确认框动手，避免误点其它确认弹窗
-    if (text.indexOf('切换') < 0 && !(confirmTarget && text.indexOf(confirmTarget) >= 0)) return;
-
-    const ok = box.querySelector('.el-message-box__btns .el-button--primary')
-      || box.querySelector('.el-message-box__btns button:last-of-type');
-    if (!ok) return;
-    confirmDone = true;          // 一次点击只确认一次
-    confirmDeadline = 0;         // 已确认，关闭时间窗
-    console.log(LOG, '自动确认弹窗：' + text.slice(0, 60));
-    ok.click();
+    if (!isSwitchConfirm(text, st.target)) return;
+    if (Date.now() - st.lastAt < 450) return;   // 点击节流，给弹窗收起动画留时间
+    const btn = confirmButton(box);
+    if (!btn) return;
+    st.tries++;
+    st.lastAt = Date.now();
+    console.log(LOG, '自动确认弹窗（第 ' + st.tries + ' 次）：' + text.slice(0, 60));
+    fireClick(btn);
   }
 
   // ---------- 版本切换（走左侧下拉，由页面自身 Vue 处理） ----------
@@ -245,7 +279,8 @@
     const before = currentVersionName(panel);
     // 已经是该版本就什么都不做：切换后当前版本会从下拉列表里消失，
     // 再点会误报「未找到版本」——v1.1.0 的「有时提示不存在」就是这个。
-    if (before === name) {
+    // 注意顶部显示的是 release(0.2) 这种带构建号的形式，不能用 === 直接比。
+    if (matchVersion(before, name)) {
       console.log(LOG, '当前已是', name, '，忽略');
       refreshQuick(document.getElementById(QUICK_ID), panel);
       return;
@@ -265,12 +300,22 @@
     console.log(LOG, '切换到版本「' + name + '」（当前 ' + before + '）');
     armAutoConfirm(name);   // 弹窗可能立刻就出来，先布好监听
     item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    await sleep(800);
+
+    // 弹窗可能要等到几百毫秒后才渲染、自动确认点掉后版本才变，
+    // 所以这里轮询等结果（最多 4s），不要在 800ms 就判死。
+    let after = before;
+    for (let i = 0; i < 20; i++) {
+      await sleep(200);
+      if (!document.contains(panel)) break;                       // 页面已跳转/重绘
+      after = currentVersionName(panel);
+      if (matchVersion(after, name)) break;
+      if (item.classList.contains('select-item') || item.querySelector('.cur-select')) break;
+    }
 
     // 成功就静默（页面通常已经跳转/刷新），只有没反应时才提示
-    const after = currentVersionName(panel);
+    const noPanel = !document.contains(panel);
     const selected = item.classList.contains('select-item') || !!item.querySelector('.cur-select');
-    if (after === name || selected || !document.contains(panel)) {
+    if (matchVersion(after, name) || selected || noPanel) {
       console.log(LOG, '切换成功 →', after);
       refreshQuick(document.getElementById(QUICK_ID), panel);
       return;
@@ -393,7 +438,7 @@
     if (!box || !panel) return;
     const cur = currentVersionName(panel);
     box.querySelectorAll('.' + TILE_CLASS + '[data-kind="version"]').forEach((tile) => {
-      const isCur = tile.dataset.key === cur;
+      const isCur = matchVersion(cur, tile.dataset.key);
       tile.classList.toggle('is-current', isCur);
       const badge = tile.querySelector('.gld-tile-badge');
       if (badge) badge.style.display = isCur ? 'block' : 'none';
