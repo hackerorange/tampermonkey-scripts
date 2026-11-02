@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达开发者控制台-版本快速切换
 // @namespace    zhongct.glodon.console.version.quick
-// @version      1.2.1
-// @description  把应用详情页右侧「总览」改成快捷链接页：版本（release / release-pre）与常用功能（构建管理、版本发布）做成带图标的大方块；点版本自动切换并自动点掉确认弹窗、直接跳转。
+// @version      1.3.0
+// @description  把应用详情页右侧「总览」改成快捷链接页：版本（release / release-pre）与常用功能（构建管理、版本发布）做成带图标的大方块；点版本直接切换（Vue 层拦截，不再弹确认框）。
 // @author       zhongct
 // @match        https://console.developer.glodon.com/*
 // @grant        none
@@ -137,8 +137,34 @@
     document.head.appendChild(style);
   }
 
-  // ---------- 自动确认切换弹窗 ----------
-  // 页面在点到版本条目后会弹 Element UI 的 MessageBox「你将切换到 xxx，是否继续」，
+  // ---------- Vue 层拦截：不弹窗直接切换 ----------
+  // 站点真实流程（来自 app.cbe1471f.js 反查）：
+  //   version-change 组件 handleCommand → $emit("changeVersion", version, versionName)
+  //   → 根组件 handelVersionChange：设 curVersionObj、versionFlag="change"、versionDialogVisible=true（弹窗）
+  //   → 用户点「确定」→ handelClickEnterVersion：pushMicroApp 跳转 + fetchAppVersionAndProduct + 关弹窗
+  // 在根组件实例上 $watch versionDialogVisible，弹窗状态刚置 true 的同一 tick 直接调
+  // handelClickEnterVersion()：我们的 data watcher 先于组件渲染 watcher 执行，弹窗来不及渲染。
+  // 只认 versionFlag === "change"（新建版本等流程也复用这个弹窗，不能替用户确认）。
+  function findSwitchVM(panel) {
+    let vm = panel && panel.__vue__;
+    while (vm && !vm.handelClickEnterVersion) vm = vm.$parent;
+    return vm || null;
+  }
+
+  function hookSwitchVM(panel) {
+    const vm = findSwitchVM(panel);
+    if (!vm || vm.__gldHooked) return;
+    vm.__gldHooked = true;
+    vm.$watch('versionDialogVisible', (v) => {
+      if (!v || vm.versionFlag !== 'change') return;
+      const name = vm.curVersionObj && vm.curVersionObj.version;
+      console.log(LOG, '已在 Vue 层拦截确认弹窗，直接切换 →', name);
+      try { vm.handelClickEnterVersion(); } catch (e) { console.warn(LOG, 'Vue 层切换失败', e); }
+    });
+  }
+
+  // ---------- 自动确认切换弹窗（Vue 层 hook 失效时的 DOM 兜底） ----------
+  // 页面在点到版本条目后弹「你将切换到 xxx，是否继续」，
   // 这里在点击后的一小段时间窗内自动点「确定」，做到点了就跳转。
   // 关键：点一次没关掉要接着点（主题/动画/遮罩都可能让首次派发的 click 落空），
   // 一次不成便永久放弃是 v1.2.0 弹窗仍在的根因。
@@ -298,7 +324,8 @@
     }
 
     console.log(LOG, '切换到版本「' + name + '」（当前 ' + before + '）');
-    armAutoConfirm(name);   // 弹窗可能立刻就出来，先布好监听
+    hookSwitchVM(panel);    // 优先走 Vue 层拦截，弹窗根本不出现
+    armAutoConfirm(name);   // DOM 兜底：hook 没挂上或站点改版时自动点确定
     item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 
     // 弹窗可能要等到几百毫秒后才渲染、自动确认点掉后版本才变，
@@ -469,6 +496,7 @@
   function scan() {
     const panel = document.querySelector(PANEL_SELECTOR);
     if (!panel || !panel.closest('.application')) return;   // 找不到侧栏版本选择器就不动
+    hookSwitchVM(panel);   // 页面重绘后组件实例可能换新，重新挂钩（幂等）
     document.querySelectorAll(OVERVIEW_SELECTOR).forEach((wrap) => {
       decorateOverview(wrap, panel);
     });

@@ -227,7 +227,7 @@ DOMContentLoaded（readyState=loading 时）┘
 - **调试**：控制台执行 `__gldStarDebug()` 打印每个菜单项的「菜单名 / 收藏键 / 是否已收藏 / 星标中心 / 箭头中心 / 差值 / 定位方式」，便于核对
 - **已知限制**：只看菜单名，所以**不同父级下的同名菜单会被视为同一项**（一起点亮）；菜单改名等于新菜单（旧名字的记录保留但不再匹配）；不做跨浏览器/跨设备同步；若某级菜单标题里没有箭头类图标，会退回固定留白
 
-## 3. `glodon-console-version-switch.user.js`（v1.2.1）
+## 3. `glodon-console-version-switch.user.js`（v1.3.0）
 
 **作用**：把开发者控制台应用详情页右侧「总览」改造成一个**快捷链接页**——页面上只剩两组带图标的大方块：`版本`（release / release-pre）与 `常用功能`（构建管理、版本发布）。点版本方块会自动在左侧版本下拉里切换、自动确认页面弹窗并直接跳转；点常用功能方块等于点左侧对应菜单。
 
@@ -239,7 +239,8 @@ DOMContentLoaded（readyState=loading 时）┘
 - **「版本不存在」修复**（v1.2.0）：
   - 版本列表有可能会等下拉打开后才渲染/异步拉取，`waitVersionItem()` 改成最多 8 轮、每轮 250ms 重试，每轮补发 `mouseenter/mouseover/mousemove`，第 3、6 轮再补一次点击，最后全文档兜底查找
   - 切换成功后**当前版本会从下拉列表里消失**，再点同一版本必然找不到；因此入口处先比对 `.version-select .version-num`，已经是该版本就直接返回（只刷新方块状态，不弹任何提示）
-- **自动确认**（v1.2.1 重写）：点条目之前 `armAutoConfirm()` 开 10s 时间窗，窗内每 120ms 找可见的 `.el-message-box`（兼容 `.el-dialog`），文案含「切换」或「目标版本名 + 是否继续/确认」才动手；按钮优先 `.el-button--primary`，兜底按「确定/确认/继续/是」文字找；点击用完整的 `mousedown → mouseup → click` 序列（只发 `click` 时会被主题的 mousedown 逻辑或已失效的旧节点吞掉）
+- **Vue 层拦截（v1.3.0，首选路径）**：反查站点打包代码（`/portal/js/app.cbe1471f.js`）摸清真实流程——`version-change` 组件 `handleCommand` → `$emit("changeVersion", version, versionName)` → 根组件 `handelVersionChange` 设 `curVersionObj`、`versionFlag="change"`、`versionDialogVisible=true`（弹窗只是个响应式标志）→ 用户点确定后 `handelClickEnterVersion()` 执行 `pushMicroApp` 跳转 + `fetchAppVersionAndProduct`。脚本从 `panel.__vue__` 沿 `$parent` 链找到带 `handelClickEnterVersion` 的根组件实例，对其 `$watch('versionDialogVisible')`：弹窗标志刚置 true 的同一 tick 直接调 `handelClickEnterVersion()`——Vue 里 data watcher 先于组件渲染 watcher 执行，**弹窗来不及渲染**。只认 `versionFlag === "change"`（新建版本流程复用同一弹窗，不能替用户确认）。`scan()` 每轮重挂钩（实例重绘换新时补上，`__gldHooked` 幂等）
+- **自动确认**（v1.2.1 重写，DOM 兜底）：点条目之前 `armAutoConfirm()` 开 10s 时间窗，窗内每 120ms 找可见的 `.el-message-box`（兼容 `.el-dialog`），文案含「切换」或「目标版本名 + 是否继续/确认」才动手；按钮优先 `.el-button--primary`，兜底按「确定/确认/继续/是」文字找；点击用完整的 `mousedown → mouseup → click` 序列（只发 `click` 时会被主题的 mousedown 逻辑或已失效的旧节点吞掉）
   - **一次点不中要继续点**：每次点击间隔 ≥450ms、最多 6 次，直到弹窗真的消失。v1.2.0 的「点一次不成即永久放弃」正是真实页面上弹窗仍在的根因（首次点击落到被重渲染替换掉的旧按钮上）
   - 切换结果改为**轮询等待**（每 200ms、最多 4s），弹窗晚几百毫秒出现、确认后版本才变的情况也能正确判定，不再 800ms 就判死
 - **版本名比对**：顶部显示的是 `release(0.2)` 这种带构建号的形式，判断「当前已是该版本」和「切换是否成功」都用 `matchVersion()`（精确或 `name(` 前缀），不能用 `===`——这是 v1.2.0「再点报不存在/提示未响应」的另一半原因

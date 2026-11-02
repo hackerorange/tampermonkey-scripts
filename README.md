@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | [rancher-404-redirect.user.js](./rancher-404-redirect.user.js) | 1.3.1 | `rancher.glodon.com` / `rancher-sg.glodon.com` / `rancher-pri.glodon.com` | 登录后偶发的「This page could not be found」错误页自动跳到 `/g/clusters`；顶部与侧边 Logo 点击也跳集群列表；日志弹窗固定为视口大小，长日志只在弹窗内部滚动 |
 | [glodon-console-fav-menus.user.js](./glodon-console-fav-menus.user.js) | 1.4.1 | `console.developer.glodon.com` | 左侧菜单末级项右侧加星星，标记常用菜单并以橙红色高亮；收藏按菜单名记录（与层级/顺序无关），记录持久化在本机 |
-| [glodon-console-version-switch.user.js](./glodon-console-version-switch.user.js) | 1.2.0 | `console.developer.glodon.com` | 应用详情页右侧「总览」改成快捷链接页：版本（release / release-pre）与常用功能（构建管理、版本发布）做成带图标的大方块，点版本自动切换并自动点掉确认弹窗、直接跳转 |
+| [glodon-console-version-switch.user.js](./glodon-console-version-switch.user.js) | 1.2.0 | `console.developer.glodon.com` | 应用详情页右侧「总览」改成快捷链接页：版本（release / release-pre）与常用功能（构建管理、版本发布）做成带图标的大方块，点版本直接切换：Vue 层拦截站点的确认弹窗（不再弹出），DOM 兜底自动点掉 |
 | [pep-book-downloader.user.js](./pep-book-downloader.user.js) | 1.0.2 | `book.pep.com.cn` | 人教教材阅读器底部加「下载」按钮，抓取全部页面、去水印后打包 ZIP（仅供个人学习使用） |
 
 各脚本的详细行为、配置项与边界条件见 [SPEC.md](./SPEC.md)。
