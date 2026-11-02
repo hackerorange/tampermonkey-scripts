@@ -227,19 +227,20 @@ DOMContentLoaded（readyState=loading 时）┘
 - **调试**：控制台执行 `__gldStarDebug()` 打印每个菜单项的「菜单名 / 收藏键 / 是否已收藏 / 星标中心 / 箭头中心 / 差值 / 定位方式」，便于核对
 - **已知限制**：只看菜单名，所以**不同父级下的同名菜单会被视为同一项**（一起点亮）；菜单改名等于新菜单（旧名字的记录保留但不再匹配）；不做跨浏览器/跨设备同步；若某级菜单标题里没有箭头类图标，会退回固定留白
 
-## 3. `glodon-console-version-switch.user.js`（v1.0.0）
+## 3. `glodon-console-version-switch.user.js`（v1.0.1）
 
 **作用**：在开发者控制台应用详情页（如「基础数据管理」）左上角「版本选择」下拉的下方，加一排快捷按钮，点击后自动在版本下拉里找到对应版本并切换，免去展开下拉逐个找。
 
 - **站点**：`https://console.developer.glodon.com/*`
 - **按钮来源**：脚本顶部 `TARGETS = ['release', 'release-pre']`，数组顺序即按钮顺序，可增删版本名
 - **注入位置**：`.application .version`（即 `div.version.version-change`）容器的 `afterend`；只处理 `.application` 内的版本选择器，避免误伤别处
-- **切换原理**：版本下拉是 Element UI 的 `v-show` 常驻 DOM（`ul.version-content`），条目为 `li.el-dropdown-menu__item.other-item`。按 `.item-middle .name span` 的 `title`/文本**精确匹配**版本名，直接对该 `li` 派发 `MouseEvent('click')`，由页面自身的 Vue 处理器完成切换——不模拟展开、不改 URL、不刷新
-- **兜底**：若菜单懒渲染找不到条目，先对 `.version-select` 派发 `mouseover/mouseenter` 模拟展开，300ms 后重找一次
-- **禁用保护**：`.el-dropdown` 带 `disabled` 属性时（开发模式等场景）不切换，弹提示「版本切换当前不可用」
+- **间距对齐**：`alignBar()` 实测「版本下拉底边 → 按钮条顶边」的实际距离，用负 `margin-top` 收到 `BAR_GAP_PX = 8px`；`padding-left` 取下拉框左沿与按钮条左沿的差值，保证左对齐。注入后 `requestAnimationFrame` 里算一次，之后每次扫描/窗口 resize 重算
+- **切换原理**：版本下拉是 Element UI 的 `v-show` 常驻 DOM（`ul.version-content`），条目为 `li.el-dropdown-menu__item.other-item`。按 `.item-middle .name span` 的 `title`/文本**精确匹配**版本名，先模拟 `mouseenter/mouseover` 打开下拉（走真实交互路径），再对目标 `li` 派发 `MouseEvent('click')`，由页面自身的 Vue 处理器完成切换——不改 URL、不刷新
+- **结果校验**：点击后等 600ms，看触发器文字是否变成目标版本、或该条目是否拿到 `select-item`/`.cur-select`，成功才提示「已切换到 X」
+- **关于 `disabled`**：页面 `.el-dropdown` 上常驻 `disabled="disabled"` 属性，实测**不代表真的禁用**，因此不再据此拦下；只有点击后确实无变化时才提示「页面未响应切换，可能当前禁用了版本切换（开发模式）」
 - **激活态**：顶部 `.version-select .version-num` 的文字与按钮名一致时按钮高亮（Element 蓝），每次 DOM 扫描刷新
 - **防重复注入**：`.version` 打 `data-gld-vq` 标记，SPA 重绘后由 MutationObserver（200ms 节流）重新扫描
-- **已知限制**：版本名按精确匹配，站点新增同名分支无影响；若 Element 版本升级改了 `version-content` / `other-item` 类名，需同步改选择器
+- **已知限制**：版本名按精确匹配；若页面确实在开发模式下禁用了切换（Vue 层忽略点击），脚本无法绕过；Element 版本升级改了 `version-content` / `other-item` 类名时需同步改选择器
 
 ## 4. `pep-book-downloader.user.js`（v1.0.2）
 

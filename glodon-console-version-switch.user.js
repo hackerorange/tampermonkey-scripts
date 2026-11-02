@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达开发者控制台-版本快速切换
 // @namespace    zhongct.glodon.console.version.quick
-// @version      1.0.0
-// @description  在应用详情页左上角「版本选择」下方加 release / release-pre 快捷按钮，点击后自动在版本下拉里找到对应版本并切换，免去每次展开下拉逐个找。版本列表可在脚本顶部 TARGETS 常量里增删。
+// @version      1.0.1
+// @description  在应用详情页左上角「版本选择」下方加 release / release-pre 快捷按钮（紧贴下拉框、左沿对齐），点击后自动在版本下拉里找到对应版本并切换。版本列表可在脚本顶部 TARGETS 常量里增删。
 // @author       zhongct
 // @match        https://console.developer.glodon.com/*
 // @grant        none
@@ -64,7 +64,8 @@
       .${BAR_CLASS} {
         display: flex;
         gap: 6px;
-        padding: 4px 12px 8px;
+        padding: 0 12px;
+        /* 上边距由 alignBar() 按实测间距算，避免和版本下拉离太远 */
       }
       .${BTN_CLASS} {
         padding: 2px 10px;
@@ -114,23 +115,26 @@
 
   async function switchTo(panel, name) {
     const dropdown = panel.querySelector('.el-dropdown');
-    if (dropdown && dropdown.hasAttribute('disabled')) {
-      toast('版本切换当前不可用（可能处于开发模式）');
-      console.warn(LOG, '下拉为 disabled，放弃切换', name);
-      return;
+    // 注意：页面上 .el-dropdown 常带 disabled="disabled" 属性，但实测仍能切换，
+    // 所以这里不再据此拦下，只记录一下，切换完再看结果判断。
+    const markedDisabled = !!(dropdown && dropdown.hasAttribute('disabled'));
+    if (markedDisabled) console.log(LOG, '下拉带 disabled 属性，仍尝试切换');
+
+    const trigger = panel.querySelector('.version-select');
+    // 先模拟 hover 打开下拉（Element UI 默认 hover 触发），让页面按真实交互走一遍
+    if (trigger) {
+      ['mouseenter', 'mouseover'].forEach((t) =>
+        trigger.dispatchEvent(new MouseEvent(t, { bubbles: true }))
+      );
+      await sleep(200);
     }
 
     let item = findVersionItem(panel, name);
-    if (!item) {
-      // 兜底：个别场景菜单懒渲染，模拟 hover 展开一次再找
-      const trigger = panel.querySelector('.version-select');
-      if (trigger) {
-        ['mouseover', 'mouseenter'].forEach((t) =>
-          trigger.dispatchEvent(new MouseEvent(t, { bubbles: true }))
-        );
-        await sleep(300);
-        item = findVersionItem(panel, name);
-      }
+    if (!item && trigger) {
+      // 兜底：菜单懒渲染或 hover 未生效时，补偿一次点击
+      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      await sleep(300);
+      item = findVersionItem(panel, name);
     }
     if (!item) {
       toast('未找到版本「' + name + '」');
@@ -138,10 +142,24 @@
       return;
     }
 
-    console.log(LOG, '切换到版本「' + name + '」');
-    // Element UI 在 li 上绑了 click/command 处理，直接派发即可
+    const before = currentVersionName(panel);
+    console.log(LOG, '切换到版本「' + name + '」（当前 ' + before + '）');
     item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    toast('已切换到 ' + name);
+    await sleep(600);
+
+    // 结果校验：触发器文字变了，或该条目拿到了选中标记，才算真的切换了
+    const after = currentVersionName(panel);
+    const selected = item.classList.contains('select-item') || !!item.querySelector('.cur-select');
+    if (after === name || selected) {
+      toast('已切换到 ' + name);
+      console.log(LOG, '切换成功 →', after);
+    } else if (markedDisabled) {
+      toast('页面未响应切换，可能当前禁用了版本切换（开发模式）');
+      console.warn(LOG, '点击已派发但版本未变化，页面可能禁用了切换');
+    } else {
+      toast('未检测到版本变化，请展开下拉确认');
+      console.warn(LOG, '点击已派发但版本未变化，当前仍为', after);
+    }
   }
 
   // ---------- 注入按钮 ----------
@@ -166,21 +184,38 @@
     return bar;
   }
 
+  // 让按钮条紧贴版本下拉下方：实测「下拉底边 → 按钮顶边」的当前间距，
+  // 用负 margin 收到目标值；左内边距对齐下拉框左沿。
+  const BAR_GAP_PX = 8;
+
+  function alignBar(panel, bar) {
+    if (!bar || !bar.isConnected) return;
+    const sel = panel.querySelector('.version-select');
+    if (!sel) return;
+    const s = sel.getBoundingClientRect();
+    const b = bar.getBoundingClientRect();
+    if (!s.height || !b.height) return;   // 未渲染（例如面板折叠）时跳过
+    bar.style.marginTop = Math.round(BAR_GAP_PX - (b.top - s.bottom)) + 'px';
+    bar.style.paddingLeft = Math.max(0, Math.round(s.left - b.left)) + 'px';
+  }
+
   function decorate(panel) {
     if (panel.hasAttribute(PROCESSED_ATTR)) {
-      // 已注入：仅刷新激活态
+      // 已注入：刷新激活态与间距
       const bar = panel.nextElementSibling;
       if (bar && bar.classList.contains(BAR_CLASS)) {
         const cur = currentVersionName(panel);
         bar.querySelectorAll('.' + BTN_CLASS).forEach((btn) => {
           btn.classList.toggle(BTN_ACTIVE_CLASS, btn.textContent === cur);
         });
+        alignBar(panel, bar);
       }
       return;
     }
     panel.setAttribute(PROCESSED_ATTR, '1');
     const bar = buildBar(panel);
     panel.insertAdjacentElement('afterend', bar);
+    requestAnimationFrame(() => alignBar(panel, bar));
     console.log(LOG, '已注入快捷按钮：', TARGETS.join(' / '));
   }
 
