@@ -211,16 +211,19 @@ DOMContentLoaded（readyState=loading 时）┘
 
 ---
 
-## 2. `glodon-console-fav-menus.user.js`（v1.3.1）
+## 2. `glodon-console-fav-menus.user.js`（v1.3.2）
 
 **作用**：在开发者控制台左侧菜单（`div.left-menu`）的末级菜单项右侧加星星，点星星标记为常用；未收藏时悬停才显示空心星，收藏后菜单文字变黄。
 
 - **站点**：`https://console.developer.glodon.com/*`
 - **存储**：`GM_setValue('gld_console_fav_menus', [...])`，存的是菜单路径字符串数组（`一级 > 二级 > 三级`，按 DOM 层级拼出）
 - **判定**：`li.el-menu-item` 视为末级项，`li.el-submenu` 的标题参与路径拼接
-- **星标位置**：星标右侧到菜单项外边缘固定 `STAR_RIGHT_PX = 20px`（与菜单顶部折叠按钮对齐）。因为菜单项自身有 `padding-right`，实际 `margin-right` 取 `20 - paddingRight`（可为负），避免「padding + margin」叠加把星标推走；每次扫描会重新计算
+- **星标水平位置**：不写死像素，改为**量测对齐**——向上找最近的 `li.el-submenu`，取其标题里的折叠箭头（优先 `.el-submenu__icon-arrow`，否则取标题内最靠右的 `i`/`svg`），把星标中心对到箭头中心。星标改为 `position:absolute` + 按算出的 `right` 定位，因此菜单项 `padding-right`、主题内边距变化都不会影响对齐
+- **兜底**：找不到箭头（顶层项等）时退回 flex 布局，`margin-right = STAR_RIGHT_PX(20) - li.paddingRight`
+- **重算时机**：注入时、每次扫描（DOM 变化）、窗口 resize
 - **防重复注入**：处理过的 `li` 打 `data-gld-fav-star` 标记，重复扫描只同步状态不重复插星
-- **已知限制**：菜单文案（`span` 文本）或层级调整会导致路径变化，已收藏项按新路径视为未收藏；不做跨浏览器/跨设备同步；若站点把折叠按钮的右侧间距也改了，需同步改 `STAR_RIGHT_PX`
+- **调试**：控制台执行 `__gldStarDebug()` 打印每个菜单项的「星标中心 / 箭头中心 / 差值 / 定位方式」，便于核对
+- **已知限制**：菜单文案（`span` 文本）或层级调整会导致路径变化，已收藏项按新路径视为未收藏；不做跨浏览器/跨设备同步；若某级菜单标题里没有箭头类图标，会退回固定留白
 
 ## 3. `pep-book-downloader.user.js`（v1.0.2）
 

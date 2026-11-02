@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达开发者控制台-常用菜单标记
 // @namespace    zhongct.glodon.console.favorites
-// @version      1.3.1
-// @description  在左侧菜单(.left-menu)最末级菜单项最右侧添加星星，点击标记常用菜单；未收藏时悬停才显示空心星；收藏后菜单文字变黄；星标右侧留白 20px，与菜单顶部折叠按钮对齐；收藏记录持久化在本机（Tampermonkey 用户目录存储）。
+// @version      1.3.2
+// @description  在左侧菜单(.left-menu)最末级菜单项最右侧添加星星，点击标记常用菜单；未收藏时悬停才显示空心星；收藏后菜单文字变黄；星标按上级折叠箭头的实际中心自动对齐；收藏记录持久化在本机（Tampermonkey 用户目录存储）。
 // @author       zhongct
 // @match        https://console.developer.glodon.com/*
 // @grant        GM_getValue
@@ -23,9 +23,10 @@
   const STAR_CLASS = 'gld-fav-star';
   const ACTIVE_CLASS = 'gld-fav-active';
   const MARKED_CLASS = 'gld-fav-marked';
+  const ABS_CLASS = 'gld-fav-star-abs';
   const GOLD = '#f7ba2a';
   const GRAY = '#c0c4cc';
-  const STAR_RIGHT_PX = 20;   // 星标右侧留白，与左菜单顶部的折叠按钮对齐
+  const STAR_RIGHT_PX = 20;   // 兜底：找不到折叠箭头时，星标右侧留白
 
   // ---------- 存储 ----------
   let favCache = null;
@@ -77,6 +78,7 @@
       .left-menu li.el-menu-item {
         display: flex;
         align-items: center;
+        position: relative;
       }
       .${STAR_CLASS} {
         margin-left: auto;
@@ -96,6 +98,14 @@
         display: block;
         width: 100%;
         height: 100%;
+      }
+      /* 与上级折叠箭头对齐时改为绝对定位，位置由 JS 按箭头的实际中心算 */
+      .${STAR_CLASS}.${ABS_CLASS} {
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        margin-left: 0;
+        margin-right: 0;
       }
       .left-menu li.el-menu-item:hover .${STAR_CLASS},
       .${STAR_CLASS}.${ACTIVE_CLASS} {
@@ -149,11 +159,54 @@
     return { svg, path };
   }
 
-  // 星标右侧距菜单项外边缘固定 STAR_RIGHT_PX；菜单项自身有 padding-right，这里减掉它，
-  // 避免「padding + margin」叠加导致星标越推越左（或贴着右沿）
+  // ---------- 星标水平位置 ----------
+  // 对齐目标：上级菜单标题右侧的折叠/展开箭头（Element UI:.el-submenu__title > i）
+  // 不写死像素值，而是量出箭头中心，把星标中心对上去；换主题/换内边距都不会偏。
+  function isRendered(el) {
+    const r = el.getBoundingClientRect();
+    return r.width >= 6 && r.height >= 6;
+  }
+
+  function findRefArrow(li) {
+    let sub = li.parentElement ? li.parentElement.closest('li.el-submenu') : null;
+    while (sub) {
+      const title = sub.querySelector(':scope > .el-submenu__title') || sub;
+      // 优先用 Element UI 的箭头类名
+      const arrow = title.querySelector('.el-submenu__icon-arrow');
+      if (arrow && isRendered(arrow)) return arrow;
+      // 兜底：标题里可能还有左侧图标，取最靠右的那个（折叠箭头永远在最右）
+      const cands = Array.prototype.filter.call(
+        title.querySelectorAll('i, svg'),
+        isRendered
+      );
+      if (cands.length) {
+        cands.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right);
+        return cands[0];
+      }
+      sub = sub.parentElement ? sub.parentElement.closest('li.el-submenu') : null;
+    }
+    return null;
+  }
+
   function applyStarOffset(star, li) {
-    const pad = parseFloat(getComputedStyle(li).paddingRight) || 0;
-    star.style.marginRight = (STAR_RIGHT_PX - pad) + 'px';
+    const liRect = li.getBoundingClientRect();
+    if (!liRect.width) return;
+    const starW = star.getBoundingClientRect().width || 18;
+    const arrow = findRefArrow(li);
+    if (arrow) {
+      const a = arrow.getBoundingClientRect();
+      const center = a.left + a.width / 2;
+      star.classList.add(ABS_CLASS);
+      star.style.marginRight = '0px';
+      // right 相对 li 的 padding 边缘；li 无边框时与 rect 右沿一致
+      star.style.right = Math.max(0, Math.round(liRect.right - center - starW / 2)) + 'px';
+    } else {
+      // 兜底：没有折叠箭头的场景（顶层项）按固定留白，减掉菜单项自身 padding
+      star.classList.remove(ABS_CLASS);
+      star.style.right = '';
+      const pad = parseFloat(getComputedStyle(li).paddingRight) || 0;
+      star.style.marginRight = (STAR_RIGHT_PX - pad) + 'px';
+    }
   }
 
   function createStar(li, favSet) {
@@ -251,7 +304,41 @@
     injectStyle();
     scan();
     observe();
+    // 侧边栏折叠/窗口缩放会改变宽度，重新对齐一次
+    window.addEventListener('resize', scheduleScan);
+    window.__gldStarDebug = debugStars;
     console.log('[常用菜单标记] 已启动：左侧菜单末级可点击星星标记常用');
+  }
+
+  // 控制台执行 __gldStarDebug() 可打印每个星标与对齐参照物的实际坐标，便于微调
+  function debugStars() {
+    const r = (el) => {
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return { left: Math.round(b.left), right: Math.round(b.right), width: Math.round(b.width) };
+    };
+    const rows = [];
+    document.querySelectorAll('div.left-menu li.el-menu-item').forEach((li) => {
+      const star = li.querySelector(':scope > .' + STAR_CLASS);
+      const arrow = findRefArrow(li);
+      rows.push({
+        菜单: (li.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 12),
+        星标中心: star ? Math.round(star.getBoundingClientRect().left + star.getBoundingClientRect().width / 2) : null,
+        箭头中心: arrow ? Math.round(arrow.getBoundingClientRect().left + arrow.getBoundingClientRect().width / 2) : null,
+        差值: star && arrow
+          ? Math.round((star.getBoundingClientRect().left + star.getBoundingClientRect().width / 2) -
+              (arrow.getBoundingClientRect().left + arrow.getBoundingClientRect().width / 2))
+          : null,
+        绝对定位: star ? star.classList.contains(ABS_CLASS) : null,
+        星标right: star ? star.style.right : null,
+        星标marginRight: star ? getComputedStyle(star).marginRight : null,
+        li右沿: Math.round(li.getBoundingClientRect().right),
+        星标: r(star),
+        箭头: r(arrow),
+      });
+    });
+    console.table(rows);
+    return rows;
   }
 
   if (document.readyState === 'loading') {
