@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达开发者控制台-版本快速切换
 // @namespace    zhongct.glodon.console.version.quick
-// @version      1.0.1
-// @description  在应用详情页左上角「版本选择」下方加 release / release-pre 快捷按钮（紧贴下拉框、左沿对齐），点击后自动在版本下拉里找到对应版本并切换。版本列表可在脚本顶部 TARGETS 常量里增删。
+// @version      1.0.2
+// @description  在应用详情页左上角「版本选择」下方加 release / release-pre 快捷按钮（紧贴下拉框、左沿对齐），点击后自动在版本下拉里找到对应版本并切换，页面弹出的「是否继续」确认框自动点掉，直接跳转。
 // @author       zhongct
 // @match        https://console.developer.glodon.com/*
 // @grant        none
@@ -27,7 +27,14 @@
   const BTN_ACTIVE_CLASS = 'gld-vq-btn-active';
   const TOAST_ID = 'gld-vq-toast';
   const PROCESSED_ATTR = 'data-gld-vq';
+  const ALIGNED_ATTR = 'data-gld-vq-aligned';
   const LOG = '[版本快速切换]';
+
+  // 布局常量
+  const BAR_GAP_PX = 8;        // 版本下拉底边 → 按钮顶边
+  const BAR_BOTTOM_PX = 12;    // 按钮底边 → 下方菜单的留白
+  // 点击后自动确认确认框的时间窗
+  const CONFIRM_WINDOW_MS = 10000;
 
   // ---------- 工具 ----------
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -46,6 +53,7 @@
         'z-index: 99999', 'padding: 8px 16px', 'border-radius: 4px',
         'background: rgba(0,0,0,.75)', 'color: #fff', 'font-size: 13px',
         'box-shadow: 0 2px 8px rgba(0,0,0,.2)', 'transition: opacity .3s',
+        'pointer-events: none',
       ].join(';');
       document.body.appendChild(el);
     }
@@ -64,8 +72,10 @@
       .${BAR_CLASS} {
         display: flex;
         gap: 6px;
+        margin: 0;
         padding: 0 12px;
-        /* 上边距由 alignBar() 按实测间距算，避免和版本下拉离太远 */
+        box-sizing: border-box;
+        /* 上下间距由 alignBar() 一次性算出（margin-top 贴下拉、padding-bottom 给下方留白） */
       }
       .${BTN_CLASS} {
         padding: 2px 10px;
@@ -94,6 +104,61 @@
     document.head.appendChild(style);
   }
 
+  // ---------- 自动确认切换弹窗 ----------
+  // 页面在点到版本条目后会弹 Element UI 的 MessageBox「你将切换到 xxx，是否继续」，
+  // 这里在点击后的一小段时间窗内自动点「确定」，做到点了就跳转。
+  let confirmDeadline = 0;
+  let confirmTarget = '';
+  let confirmDone = false;
+  let confirmTimer = null;
+
+  function armAutoConfirm(name) {
+    confirmTarget = name;
+    confirmDone = false;            // 每次点击重置，弹窗节点被复用也能再确认一次
+    confirmDeadline = Date.now() + CONFIRM_WINDOW_MS;
+    if (confirmTimer) return;
+    confirmTimer = setInterval(() => {
+      if (!confirmDeadline || Date.now() > confirmDeadline) {
+        clearInterval(confirmTimer);
+        confirmTimer = null;
+        return;
+      }
+      tryAutoConfirm();
+    }, 100);
+  }
+
+  function visibleMessageBox() {
+    const wraps = document.querySelectorAll(
+      '.el-message-box__wrapper, .el-message-box'
+    );
+    for (const el of wraps) {
+      const box = el.classList.contains('el-message-box') ? el : el.querySelector('.el-message-box');
+      if (!box) continue;
+      const wrap = box.parentElement;
+      if (wrap && wrap.style && wrap.style.display === 'none') continue;
+      if (box.getBoundingClientRect().height === 0) continue;   // 还在收起态
+      return box;
+    }
+    return null;
+  }
+
+  function tryAutoConfirm() {
+    if (!confirmDeadline || confirmDone || Date.now() > confirmDeadline) return;
+    const box = visibleMessageBox();
+    if (!box) return;
+    const text = normalize(box.textContent);
+    // 只对「切换版本」的确认框动手，避免误点其它确认弹窗
+    if (text.indexOf('切换') < 0 && !(confirmTarget && text.indexOf(confirmTarget) >= 0)) return;
+
+    const ok = box.querySelector('.el-message-box__btns .el-button--primary')
+      || box.querySelector('.el-message-box__btns button:last-of-type');
+    if (!ok) return;
+    confirmDone = true;          // 一次点击只确认一次
+    confirmDeadline = 0;         // 已确认，关闭时间窗
+    console.log(LOG, '自动确认弹窗：' + text.slice(0, 60));
+    ok.click();
+  }
+
   // ---------- 版本切换 ----------
   // 在版本下拉菜单里按名称找条目；菜单是 v-show 常驻 DOM，无需真的展开
   function findVersionItem(root, name) {
@@ -115,8 +180,7 @@
 
   async function switchTo(panel, name) {
     const dropdown = panel.querySelector('.el-dropdown');
-    // 注意：页面上 .el-dropdown 常带 disabled="disabled" 属性，但实测仍能切换，
-    // 所以这里不再据此拦下，只记录一下，切换完再看结果判断。
+    // 注意：页面上 .el-dropdown 常带 disabled="disabled" 属性，但实测仍能切换，所以不据此拦下
     const markedDisabled = !!(dropdown && dropdown.hasAttribute('disabled'));
     if (markedDisabled) console.log(LOG, '下拉带 disabled 属性，仍尝试切换');
 
@@ -144,22 +208,21 @@
 
     const before = currentVersionName(panel);
     console.log(LOG, '切换到版本「' + name + '」（当前 ' + before + '）');
+    armAutoConfirm(name);   // 弹窗可能立刻就出来，先布好监听
     item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    await sleep(600);
+    await sleep(800);
 
-    // 结果校验：触发器文字变了，或该条目拿到了选中标记，才算真的切换了
+    // 成功就静默（页面通常已经跳转/刷新），只有没反应时才提示
     const after = currentVersionName(panel);
     const selected = item.classList.contains('select-item') || !!item.querySelector('.cur-select');
-    if (after === name || selected) {
-      toast('已切换到 ' + name);
+    if (after === name || selected || !document.contains(panel)) {
       console.log(LOG, '切换成功 →', after);
-    } else if (markedDisabled) {
-      toast('页面未响应切换，可能当前禁用了版本切换（开发模式）');
-      console.warn(LOG, '点击已派发但版本未变化，页面可能禁用了切换');
-    } else {
-      toast('未检测到版本变化，请展开下拉确认');
-      console.warn(LOG, '点击已派发但版本未变化，当前仍为', after);
+      return;
     }
+    toast(markedDisabled
+      ? '页面未响应切换，可能当前禁用了版本切换（开发模式）'
+      : '未检测到版本变化，请展开下拉确认');
+    console.warn(LOG, '点击已派发但版本未变化，当前仍为', after);
   }
 
   // ---------- 注入按钮 ----------
@@ -184,39 +247,54 @@
     return bar;
   }
 
-  // 让按钮条紧贴版本下拉下方：实测「下拉底边 → 按钮顶边」的当前间距，
-  // 用负 margin 收到目标值；左内边距对齐下拉框左沿。
-  const BAR_GAP_PX = 8;
+  // 找到面板对应的按钮条（SPA 重绘后可能插进了别的兄弟节点）
+  function findBar(panel) {
+    const next = panel.nextElementSibling;
+    if (next && next.classList.contains(BAR_CLASS)) return next;
+    const parent = panel.parentElement;
+    if (!parent) return null;
+    const cand = parent.querySelector(':scope > .' + BAR_CLASS);
+    return cand || null;
+  }
 
-  function alignBar(panel, bar) {
+  // 让按钮条紧贴版本下拉下方、左沿对齐。
+  // 关键：量之前先把 margin-top 归零，用「自然间距」算一次补偿；算完打标记，之后不再重算。
+  // 旧版用「已生效 margin 后的位置」反推，补偿会被当成自然间距，每扫一次就把间距推回去，于是来回抖。
+  function alignBar(panel, bar, force) {
     if (!bar || !bar.isConnected) return;
     const sel = panel.querySelector('.version-select');
     if (!sel) return;
+    if (!force && bar.getAttribute(ALIGNED_ATTR) === '1') return;
+
+    bar.style.marginTop = '0px';
     const s = sel.getBoundingClientRect();
     const b = bar.getBoundingClientRect();
     if (!s.height || !b.height) return;   // 未渲染（例如面板折叠）时跳过
+
     bar.style.marginTop = Math.round(BAR_GAP_PX - (b.top - s.bottom)) + 'px';
     bar.style.paddingLeft = Math.max(0, Math.round(s.left - b.left)) + 'px';
+    bar.style.paddingBottom = BAR_BOTTOM_PX + 'px';
+    bar.setAttribute(ALIGNED_ATTR, '1');
   }
 
   function decorate(panel) {
-    if (panel.hasAttribute(PROCESSED_ATTR)) {
-      // 已注入：刷新激活态与间距
-      const bar = panel.nextElementSibling;
-      if (bar && bar.classList.contains(BAR_CLASS)) {
-        const cur = currentVersionName(panel);
-        bar.querySelectorAll('.' + BTN_CLASS).forEach((btn) => {
-          btn.classList.toggle(BTN_ACTIVE_CLASS, btn.textContent === cur);
-        });
-        alignBar(panel, bar);
-      }
+    let bar = findBar(panel);
+
+    if (!bar) {
+      panel.setAttribute(PROCESSED_ATTR, '1');
+      bar = buildBar(panel);
+      panel.insertAdjacentElement('afterend', bar);
+      alignBar(panel, bar, true);
+      console.log(LOG, '已注入快捷按钮：', TARGETS.join(' / '));
       return;
     }
-    panel.setAttribute(PROCESSED_ATTR, '1');
-    const bar = buildBar(panel);
-    panel.insertAdjacentElement('afterend', bar);
-    requestAnimationFrame(() => alignBar(panel, bar));
-    console.log(LOG, '已注入快捷按钮：', TARGETS.join(' / '));
+
+    // 已注入：只刷新激活态，间距已对齐就不再动
+    const cur = currentVersionName(panel);
+    bar.querySelectorAll('.' + BTN_CLASS).forEach((btn) => {
+      btn.classList.toggle(BTN_ACTIVE_CLASS, btn.textContent === cur);
+    });
+    alignBar(panel, bar, false);
   }
 
   function scan() {
@@ -237,12 +315,19 @@
     }, 200);
   }
 
+  function realignAll() {
+    document.querySelectorAll('.' + BAR_CLASS).forEach((bar) => {
+      bar.removeAttribute(ALIGNED_ATTR);
+    });
+    scheduleScan();
+  }
+
   function init() {
     injectStyle();
     scan();
     const observer = new MutationObserver(scheduleScan);
     observer.observe(document.body, { childList: true, subtree: true });
-    window.addEventListener('resize', scheduleScan);
+    window.addEventListener('resize', realignAll);
     console.log(LOG, '已启动：版本选择下方快捷按钮 →', TARGETS.join(' / '));
   }
 
