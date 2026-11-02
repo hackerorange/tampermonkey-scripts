@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达开发者控制台-常用菜单标记
 // @namespace    zhongct.glodon.console.favorites
-// @version      1.3.2
-// @description  在左侧菜单(.left-menu)最末级菜单项最右侧添加星星，点击标记常用菜单；未收藏时悬停才显示空心星；收藏后菜单文字变黄；星标按上级折叠箭头的实际中心自动对齐；收藏记录持久化在本机（Tampermonkey 用户目录存储）。
+// @version      1.4.0
+// @description  在左侧菜单(.left-menu)最末级菜单项最右侧添加星星，点击标记常用菜单；未收藏时悬停才显示空心星；收藏后菜单文字变黄；星标按上级折叠箭头的实际中心自动对齐；收藏按「菜单名」记录（与层级、顺序无关），旧版层级路径记录会自动迁移；记录持久化在本机（Tampermonkey 用户目录存储）。
 // @author       zhongct
 // @match        https://console.developer.glodon.com/*
 // @grant        GM_getValue
@@ -31,10 +31,39 @@
   // ---------- 存储 ----------
   let favCache = null;
 
+  // 旧版本存的是「一级 > 二级 > 末级」层级路径，层级/顺序一变就失联。
+  // 现在只按菜单名记录，读到旧格式时自动迁移成末级名称并去重。
+  function migrateLegacy(list) {
+    let changed = false;
+    const out = [];
+    const seen = new Set();
+    list.forEach((v) => {
+      if (typeof v !== 'string' || !v.trim()) { changed = true; return; }
+      const name = v.split(/\s*>\s*/).filter(Boolean).pop().trim();
+      if (!name) { changed = true; return; }
+      if (name !== v) changed = true;
+      if (seen.has(name)) { changed = true; return; }
+      seen.add(name);
+      out.push(name);
+    });
+    return { list: out, changed };
+  }
+
   function readFavs() {
     try {
       const v = GM_getValue(STORAGE_KEY, []);
-      return Array.isArray(v) ? v : [];
+      const raw = Array.isArray(v) ? v : [];
+      const { list, changed } = migrateLegacy(raw);
+      if (changed) {
+        favCache = list;
+        try {
+          GM_setValue(STORAGE_KEY, list);
+        } catch (e) {
+          console.warn('[常用菜单标记] 迁移旧记录写回失败', e);
+        }
+        console.log('[常用菜单标记] 已按菜单名迁移旧记录：', list);
+      }
+      return list;
     } catch (e) {
       console.error('[常用菜单标记] 读取失败', e);
       return [];
@@ -122,27 +151,50 @@
     document.head.appendChild(style);
   }
 
-  // ---------- 菜单路径 ----------
+  // ---------- 菜单标识：按名字，不按层级/位置 ----------
+  const NAME_SEP = ' > ';
+
   function normalizeText(el) {
     return (el && el.textContent ? el.textContent : '').replace(/\s+/g, ' ').trim();
   }
 
-  function getMenuPath(li) {
+  // 末级菜单的名字：取直接子 span 的文本（排除我们自己插的星标 span）
+  function getLeafName(li) {
+    const spans = li.querySelectorAll(':scope > span');
+    for (let i = 0; i < spans.length; i++) {
+      if (spans[i].classList.contains(STAR_CLASS)) continue;
+      const t = normalizeText(spans[i]);
+      if (t) return t;
+    }
+    // 兜底：兼容 <a> 包裹、文本散落等结构 —— 拷贝一份去掉星标后取全文
+    const clone = li.cloneNode(true);
+    const stars = clone.querySelectorAll('.' + STAR_CLASS);
+    for (let i = 0; i < stars.length; i++) stars[i].remove();
+    return normalizeText(clone);
+  }
+
+  // 仅当菜单名为空（纯图标项）时，才用上级标题补一个可读的名字
+  function getParentPath(li) {
     const parts = [];
-    let el = li;
+    let el = li.parentElement ? li.parentElement.closest('li') : null;
     while (el && el.tagName === 'LI') {
-      if (el.classList.contains('el-menu-item')) {
-        const span = el.querySelector(':scope > span');
-        const t = normalizeText(span) || normalizeText(el);
-        if (t) parts.unshift(t);
-      } else if (el.classList.contains('el-submenu')) {
-        const title = el.querySelector(':scope > .el-submenu__title > span');
-        const t = normalizeText(title);
+      if (el.classList.contains('el-submenu')) {
+        const title = el.querySelector(':scope > .el-submenu__title');
+        const label = title ? title.querySelector(':scope > span') : null;
+        const t = normalizeText(label) || normalizeText(title);
         if (t) parts.unshift(t);
       }
       el = el.parentElement ? el.parentElement.closest('li') : null;
     }
-    return parts.join(' > ');
+    return parts.join(NAME_SEP);
+  }
+
+  // 收藏主键 = 菜单名（与它在菜单树里的位置、顺序无关）
+  function getMenuKey(li) {
+    const name = getLeafName(li);
+    if (name) return name;
+    const parent = getParentPath(li);
+    return parent ? parent + NAME_SEP + '(未命名)' : '(未命名菜单)';
   }
 
   // ---------- 星星（SVG 对称五角星） ----------
@@ -217,23 +269,23 @@
     const { svg, path } = buildStarSvg();
     star.appendChild(svg);
 
-    const menuPath = getMenuPath(li);
-
     function render(isActive) {
       if (isActive) {
         path.setAttribute('fill', GOLD);
         path.setAttribute('stroke', GOLD);
-        star.title = '取消常用标记';
+        star.title = '取消常用标记：' + (star._gldKey || '');
       } else {
         path.setAttribute('fill', 'none');
         path.setAttribute('stroke', GRAY);
-        star.title = '标记为常用';
+        star.title = '标记为常用：' + (star._gldKey || '');
       }
       li.classList.toggle(MARKED_CLASS, isActive);
     }
 
     function syncFromStorage(set) {
-      const active = isFav(menuPath, set);
+      // 每次都按当前菜单名重算主键：菜单改名/换位置后依然认得出来
+      star._gldKey = getMenuKey(li);
+      const active = isFav(star._gldKey, set);
       star.classList.toggle(ACTIVE_CLASS, active);
       render(active);
     }
@@ -255,7 +307,7 @@
       e.stopPropagation();
       const nowActive = !star.classList.contains(ACTIVE_CLASS);
       star.classList.toggle(ACTIVE_CLASS, nowActive);
-      setFav(menuPath, nowActive);
+      setFav(getMenuKey(li), nowActive);
       render(nowActive);
     });
 
@@ -322,7 +374,9 @@
       const star = li.querySelector(':scope > .' + STAR_CLASS);
       const arrow = findRefArrow(li);
       rows.push({
-        菜单: (li.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 12),
+        菜单名: getLeafName(li),
+        收藏键: getMenuKey(li),
+        已收藏: star ? star.classList.contains(ACTIVE_CLASS) : null,
         星标中心: star ? Math.round(star.getBoundingClientRect().left + star.getBoundingClientRect().width / 2) : null,
         箭头中心: arrow ? Math.round(arrow.getBoundingClientRect().left + arrow.getBoundingClientRect().width / 2) : null,
         差值: star && arrow
