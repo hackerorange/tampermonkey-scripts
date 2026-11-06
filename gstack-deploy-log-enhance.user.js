@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GStack 部署日志增强
 // @namespace    zhongct.gstack.deploy.log.maximize
-// @version      1.4.1
-// @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「清理」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情，Esc 或再点一次还原，Pod/Container 下拉浮层保持可用；清理一键清空当前日志内容；日志永久不自动换行（纯 CSS，横向滚动，脚本零维护开销）。
+// @version      1.5.0
+// @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「清理」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情，Esc 或再点一次还原，Pod/Container 下拉浮层保持可用；清理一键清空当前日志内容；日志保持站点默认的自动换行。
 // @author       zhongct
 // @match        https://gstack.glodon.com/*
 // @grant        none
@@ -52,11 +52,6 @@
       body.${MAX_BODY_CLASS} .next-portal,
       body.${MAX_BODY_CLASS} .next-overlay-inner,
       body.${MAX_BODY_CLASS} .next-overlay-backdrop { z-index: 100000 !important; }
-      /* 日志永久不自动换行：纯 CSS 强制，无论 CodeMirror 处于什么模式、
-         站点怎么重渲染都生效，脚本不需要任何动态维护（零开销） */
-      .workload-details-log .CodeMirror pre.CodeMirror-line,
-      .workload-details-log .CodeMirror pre.CodeMirror-line-like { white-space: pre !important; }
-      .workload-details-log .CodeMirror .CodeMirror-scroll { overflow-x: auto !important; }
     `;
     document.head.appendChild(style);
   }
@@ -97,19 +92,7 @@
     const wrapper = block.querySelector('.CodeMirror');
     return wrapper && wrapper.CodeMirror ? wrapper.CodeMirror : null;
   }
-
-  // 关掉自动换行：仅在完整装饰时执行一次（拿不到实例也没关系，
-  // 上面的 CSS 已经保证了视觉效果，这里只是让 CodeMirror 内部状态对齐，
-  // 避免它在换行模式下做多余测量）。不做任何周期性维护。
-  function ensureNoWrap(block) {
-    const wrapper = block.querySelector('.CodeMirror');
-    if (!wrapper) return;
-    const cm = wrapper.CodeMirror;   // CodeMirror 构造时挂在 wrapper 元素上
-    if (cm) {
-      try { if (cm.getOption('lineWrapping')) cm.setOption('lineWrapping', false); } catch (e) { /* CSS 兜底 */ }
-    }
-    if (wrapper.classList.contains('CodeMirror-wrap')) wrapper.classList.remove('CodeMirror-wrap');
-  }
+  // 注：换行行为完全交给站点默认配置，脚本不再干预（v1.5.0 起）
 
   function refreshCM(block) {
     const cm = cmOf(block);
@@ -138,7 +121,6 @@
     block.classList.add(MAX_CLASS);
     document.body.classList.add(MAX_BODY_CLASS);
     maxed = true;
-    ensureNoWrap(block);
     // CodeMirror 容器尺寸变了必须 refresh，否则内容区高度还是旧值
     setTimeout(() => refreshCM(block), 60);
   }
@@ -190,8 +172,6 @@
   }
 
   function decorate(block) {
-    ensureNoWrap(block);   // 日志容器始终不自动换行
-
     const refreshBtn = findRefreshBtn(block);
     if (!refreshBtn) return;
 
