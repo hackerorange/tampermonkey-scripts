@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GStack 部署日志增强
 // @namespace    zhongct.gstack.deploy.log.maximize
-// @version      1.3.1
+// @version      1.3.2
 // @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「清理」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情，Esc 或再点一次还原；清理一键清空当前日志内容；日志不自动换行（横向滚动）。
 // @author       zhongct
 // @match        https://gstack.glodon.com/*
@@ -43,9 +43,9 @@
       .${MAX_CLASS} .header { flex: 0 0 auto; }
       .${MAX_CLASS} .react-codemirror2 { flex: 1 1 0; min-height: 0; }
       .${MAX_CLASS} .CodeMirror { height: 100% !important; }
-      /* 拿不到 CodeMirror 实例时的兜底：CSS 直接关掉换行 */
-      .CodeMirror.gstack-nowrap-fallback pre.CodeMirror-line,
-      .CodeMirror.gstack-nowrap-fallback pre.CodeMirror-line-like { white-space: pre !important; }
+      /* 日志始终不自动换行：直接按日志容器限定，站点重渲染/类被加回来也不失效 */
+      .workload-details-log .CodeMirror pre.CodeMirror-line,
+      .workload-details-log .CodeMirror pre.CodeMirror-line-like { white-space: pre !important; }
     `;
     document.head.appendChild(style);
   }
@@ -94,10 +94,26 @@
     if (cm) {
       try {
         if (cm.getOption('lineWrapping')) cm.setOption('lineWrapping', false);
+        // 站点重渲染可能只把类加回来而实例选项没同步，类也顺手压掉（配合永久 CSS）
+        wrapper.classList.remove('CodeMirror-wrap');
         return;
-      } catch (e) { /* 落到 CSS 兜底 */ }
+      } catch (e) { /* 落到下面的类/CSS 兜底 */ }
     }
+    wrapper.classList.remove('CodeMirror-wrap');
     wrapper.classList.add('gstack-nowrap-fallback');
+  }
+
+  // 快路径里的轻量维护：只查类与实例选项（不触发布局），
+  // 站点刷新/重渲染把 lineWrapping 打开后能及时再关掉
+  function maintainNoWrap(block) {
+    const wrapper = block.querySelector('.CodeMirror');
+    if (!wrapper) return;
+    const wrapped = wrapper.classList.contains('CodeMirror-wrap');
+    const cm = wrapper.CodeMirror;
+    let cmWrapped = false;
+    if (cm) { try { cmWrapped = !!cm.getOption('lineWrapping'); } catch (e) { /* ignore */ } }
+    if (!wrapped && !cmWrapped) return;   // 已经是不换行，什么都不做
+    ensureNoWrap(block);
   }
 
   function refreshCM(block) {
@@ -249,6 +265,7 @@
         b.querySelector('#' + BTN_ID) &&
         b.querySelector('#' + CLEAR_BTN_ID) &&
         (!maxed || b.classList.contains(MAX_CLASS))) {
+      maintainNoWrap(b);   // 站点刷新/重渲染会把 wrap 类加回来，这里轻量补刀
       return;
     }
     const block = visibleLogBlock();
