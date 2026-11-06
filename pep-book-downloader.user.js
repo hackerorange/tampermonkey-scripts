@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         人教教材阅读器 · 下载助手
 // @namespace    pep-book-downloader
-// @version      1.1.0
+// @version      1.2.0
 // @description  在人教教材在线阅读器底部工具栏加一个「下载」按钮，点击后弹窗显示进度，自动抓取全部页面、去水印并打包 ZIP 下载。仅供个人学习使用。
 // @author       hackerorange
 // @match        https://book.pep.com.cn/*
@@ -27,12 +27,41 @@
   const BOTTOM_TOL = 64;
   // 页面底部「人民教育出版社」绿色书法署名：固定居中，占比很小
   const LOGO_ZONE = { x0: 0.30, x1: 0.70, y0: 0.955 };
+  // 页面底部灰色水印「仅供个人学习使用，未经授权不得另做他用」：
+  // 它只出现在「插画铺满页脚」的页面上（白页只有绿色书法署名），所以没有干净参考页可学。
+  // 办法：水印是半透明灰，它在每个像素上打掉的比例 a 就是「相对变暗比例」；
+  // 这个比例每页都相同，而插画内容每页都不同 —— 逐页求 dev=(背景−亮度)/背景，跨页取低分位，
+  // 水印的字形和浓度就一起浮出来了（见 4.5 节）。
+  const WM_SEED_T = 0.10;     // 双阈值：alpha 明显的位置作种子（一定属于字形）
+  const WM_GROW_T = 0.04;     // 双阈值：alpha 略高的位置作可生长区（种子连通过来才算）
+  const WM_ALPHA_MAX = 0.55;  // 反解时 alpha 的上限：再高就不是「半透明灰字」了
+  const WM_QUANTILE = 0.25;   // 跨页取低分位：水印每页都在，插画各不相同
+  const WM_DEV_LO = 0.07;     // 页内：灰字覆盖率的下限（再低就是噪点）
+  const WM_DEV_HI = 0.35;     // 页内：上限（更黑的是插画线条，不是半透明灰字）
+  const WM_RUN_MAX = 24;      // 页内：横向连续不超过这么多像素才算笔画
+  const WM_BAND_PAD = 4;      // 页内：字行区间上下各放宽几行
+  const WM_BG_R = 16;         // 估「局部背景」的盒式窗口半径：要明显大于笔画，且能把笔画的上下空白卷进来
+  const WM_MIN_PAGES = 4;     // 至少累积这么多页才敢定位置先验
+  const WM_STACK_MAX = 32;    // 最多保留这么多页的响应（再多内存吃不消）
+  const WM_LOGO_GUARD = { x0: 0.36, x1: 0.64 };  // 绿色署名区交给 cleanLogoSignature
 
   // ===== 全局状态（页面不刷新则缓存一直有效，可断点续传）=====
   let cache = null;          // Array<Blob|null>，下标 = 页码
   let running = false;       // 防止重复点击并发运行
   let cancelFlag = false;    // 弹窗「取消」按钮
   let ui = null;             // 弹窗元素引用
+
+  // ===== 底部灰色水印（跨页学位置 + 逐页反解）=====
+  let wmStack = [];          // Float32Array(W*bh) 列表：逐页的相对变暗比例 dev（= 覆盖率）
+  let wmN = 0;               // 参与学习的页数
+  let wmW = 0, wmBH = 0;     // 学习时的页面宽度与底带高度（尺寸不一致的页不参与）
+  let wmMask = null;         // Uint8Array(W*bh)：字行位置先验（跨页交集，不追求字形完整）
+  let wmMed = null;          // Float32Array(W*bh)：跨页学到的覆盖率（alpha），也当字形模板用
+  let wmLastA = 0;           // 上一页清掉的像素平均覆盖率（0.10~0.30 属正常），供日志/调试
+
+  function resetFooterLearning() {
+    wmStack = []; wmN = 0; wmW = 0; wmBH = 0; wmMask = null; wmMed = null; wmLastA = 0;
+  }
 
   // ============================================================
   // 一、底部工具栏注入「下载」按钮
@@ -271,16 +300,39 @@
     // 5. 去水印处理（阶段权重 60~90%）
     setStage('去水印处理 …');
     passthrough = 0; reencoded = 0;
+    resetFooterLearning();
     const cleaned = [];
+    const busy = [];        // 主色填充没擦到底带的页（插画页脚 / 水印太浅），等模板学完再补
     for (let i = 0; i < blobs.length; i++) {
       if (cancelFlag) { log('⏹ 已取消'); setStage('已取消'); return; }
-      cleaned.push(await cleanOnePage(blobs[i]));
+      const r = await cleanOnePage(blobs[i], { learn: true });
+      cleaned.push(r.blob);
+      if (!r.stripOk || !r.fillRan) busy.push(i);
       if ((i + 1) % 5 === 0 || i + 1 === blobs.length) {
-        setProgress(60 + ((i + 1) / blobs.length) * 30);
+        setProgress(60 + ((i + 1) / blobs.length) * 28);
         setStage(`去水印 ${i + 1}/${blobs.length}`);
       }
     }
     log(`透传原文件 ${passthrough} 页，去水印重编码 ${reencoded} 页`);
+
+    // 5.1 主色填充没擦到的页（插画铺满页脚）：用跨页学到的「字行位置」+ 本页的「半透明浓度」补掉底部灰字
+    if (busy.length) {
+      wmMask = buildFooterMask();
+      if (!wmMask) {
+        log(`插画页脚 ${busy.length} 页：可比对的页数不足（需 ≥${WM_MIN_PAGES} 页），灰字保持原样`);
+      } else {
+        let fixed = 0;
+        for (const i of busy) {
+          if (cancelFlag) { log('⏹ 已取消'); setStage('已取消'); return; }
+          const r = await cleanOnePage(blobs[i], { applyMask: true });
+          cleaned[i] = r.blob;
+          if (r.masked) fixed++;
+          setProgress(88 + (fixed / busy.length) * 2);
+          setStage(`插画页脚修补 ${fixed}/${busy.length}`);
+        }
+        log(`插画页脚 ${busy.length} 页：补掉底部灰字 ${fixed} 页（尽力而为，个别位置可能留淡淡残影）`);
+      }
+    }
 
     // 6. 打包 ZIP（阶段权重 90~99%）
     setStage('打包 ZIP …');
@@ -365,7 +417,8 @@
     return new Blob([out], { type: 'image/jpeg' });
   };
 
-  async function cleanOnePage(blob) {
+  async function cleanOnePage(blob, opts) {
+    opts = opts || {};
     const dens = readJpegDensity(await blob.arrayBuffer());
     const img = await new Promise((resolve, reject) => {
       const im = new Image();
@@ -378,11 +431,12 @@
     c.width = img.naturalWidth;    // 原始像素尺寸，不缩放
     c.height = img.naturalHeight;
     c.getContext('2d').drawImage(img, 0, 0);
-    if (!cleanWatermark(c)) { passthrough++; return blob; }
+    const info = cleanWatermark(c, opts);
+    if (!info.changed) { passthrough++; return { blob, stripOk: info.stripOk, fillRan: info.fillRan, masked: info.masked }; }
     reencoded++;
     const out = await new Promise((resolve, reject) =>
       c.toBlob(b => b ? resolve(b) : reject(new Error('JPEG 编码失败')), 'image/jpeg', 0.98));
-    return patchJpegDensity(out, dens);
+    return { blob: await patchJpegDensity(out, dens), stripOk: info.stripOk, fillRan: info.fillRan, masked: info.masked };
   }
 
   // ---------- 底部绿色署名清除 ----------
@@ -518,10 +572,230 @@
     return true;
   }
 
-  function cleanWatermark(canvas) {
+  // ============================================================
+  // 四.5 底部灰色水印（跨页中值 → 搜索区 → 页内精修 → 同行插值）
+  // ============================================================
+  // 问题：底部「仅供个人学习使用，未经授权不得另做他用」是半透明灰字。白页面上它根本不存在
+  // （白页只有绿色书法署名），只在「插画铺满页脚」的页面上出现 —— 所以没有干净参考页可以学模板。
+  //
+  // 办法（分成「学位置」和「量浓度」两件事）：
+  //   1) 逐页算相对变暗比例 dev = (盒式背景 − 亮度) / 盒式背景。水印是半透明灰，
+  //      它在每个像素上打掉的比例恰好就是覆盖率 a；插画内容每页不同，dev 也就每页不同。
+  //   2) 跨页取低分位 + 双阈值滞后 → 得到「这行字大概落在哪几行、哪一段 x」的位置先验。
+  //      （不追求字形完整：这行字在每页里的上下位置会浮动几像素，跨页交集只能剩下一段。）
+  //   3) 修补时以该先验为窗口，用**这一页自己的 dev** 决定清哪些像素：dev ∈ [0.07, 0.35]
+  //      且横向连续 ≤ 24px 的才当笔画。反解 obs/(1−dev) 即回到水印之前的亮度，
+  //      纹理一个像素都不插值，所以插画不会拉花；比灰字更黑的线条、更长的结构都不碰。
+  // 注意：绿色署名区不参与，交给 cleanLogoSignature。
+
+  // 盒式均值（积分图实现，O(n)）：把掩膜当空洞、只统计干净像素，用来估「背景本该多亮」
+  function boxMeanLum(lum, mask, W, H, r) {
+    const pw = W + 1;
+    const p1 = new Float64Array(pw * (H + 1));
+    const p2 = new Float64Array(pw * (H + 1));
+    for (let y = 0; y < H; y++) {
+      let r1 = 0, r2 = 0;
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x, w = mask && mask[i] ? 0 : 1;
+        r1 += lum[i] * w; r2 += w;
+        p1[(y + 1) * pw + x + 1] = p1[y * pw + x + 1] + r1;
+        p2[(y + 1) * pw + x + 1] = p2[y * pw + x + 1] + r2;
+      }
+    }
+    const out = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) {
+      const y0 = Math.max(0, y - r), y1 = Math.min(H, y + r + 1);
+      for (let x = 0; x < W; x++) {
+        const x0 = Math.max(0, x - r), x1 = Math.min(W, x + r + 1);
+        const s1 = p1[y1 * pw + x1] - p1[y0 * pw + x1] - p1[y1 * pw + x0] + p1[y0 * pw + x0];
+        const s2 = p2[y1 * pw + x1] - p2[y0 * pw + x1] - p2[y1 * pw + x0] + p2[y0 * pw + x0];
+        out[y * W + x] = s2 >= 8 ? s1 / s2 : lum[y * W + x];
+      }
+    }
+    return out;
+  }
+
+  function learnFooterFootprint(d, W, bh) {
+    if (!wmW) { wmW = W; wmBH = bh; }
+    if (W !== wmW || bh !== wmBH) return;      // 尺寸不同的页（封面等）不参与
+    wmN++;
+    if (wmStack.length >= WM_STACK_MAX) return;
+    const n = W * bh;
+    const lum = new Float32Array(n);
+    for (let i = 0, p = 0; i < n; i++, p += 4) lum[i] = (d[p] + d[p + 1] + d[p + 2]) / 3;
+    // 相对变暗比例 dev = (bg − 亮度) / bg：水印是「半透明灰」，它在每个像素上打掉的正是这个比例，
+    // 也就是覆盖率 alpha 本身。插画内容每页不同，dev 也会变；水印每页都在，dev 保持同一个值。
+    const bg = boxMeanLum(lum, null, W, bh, WM_BG_R);
+    const dev = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const b = bg[i];
+      if (b < 24) continue;                    // 太暗的地方量不出比例
+      const v = (b - lum[i]) / b;
+      dev[i] = v > 0 ? (v > 1 ? 1 : v) : 0;
+    }
+    wmStack.push(dev);
+  }
+
+  // 3x3 形态学：grow=true 为膨胀，false 为腐蚀
+
+  function maskMorph(m, w, h, grow) {
+    const out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let v = grow ? 0 : 1;
+        for (let dy = -1; dy <= 1 && (grow ? !v : v); dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= h) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            if (xx < 0 || xx >= w) continue;
+            if (grow) { if (m[yy * w + xx]) { v = 1; break; } }
+            else if (!m[yy * w + xx]) { v = 0; break; }
+          }
+        }
+        out[y * w + x] = v;
+      }
+    }
+    return out;
+  }
+
+  function buildFooterMask() {
+    const n = wmStack.length;
+    if (n < WM_MIN_PAGES) return null;
+    const w = wmW, h = wmBH, area = w * h;
+    // 逐像素跨页取「低分位」：水印每页都在这个位置打掉同一比例 → 低分位仍是那个比例；
+    // 插画内容每页不同（有的页这里深、有的浅）→ 低分位被拉到 0。低分位比中值更不容易被
+    // 「多数页都恰好有深色内容」骗到，代价是偶尔把水印估得略轻 —— 后面反解是除法，可承受。
+    const wmDev = new Float32Array(area);
+    const buf = new Float32Array(n);
+    const qi = Math.floor((n - 1) * WM_QUANTILE);
+    for (let i = 0; i < area; i++) {
+      for (let k = 0; k < n; k++) buf[k] = wmStack[k][i];
+      buf.sort();
+      wmDev[i] = buf[qi];
+    }
+    const gx0 = Math.round(w * WM_LOGO_GUARD.x0), gx1 = Math.round(w * WM_LOGO_GUARD.x1);
+    // 双阈值滞后：强响应作种子（一定是笔画），弱响应作可生长区；从种子在弱区内连通生长，
+    // 既能补全笔画（中值响应在笔画边缘会衰减），又不会把纹理的零散弱响应吃进来（那里没有种子）
+    let m = new Uint8Array(area);
+    let cand = new Uint8Array(area);
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        if (x >= gx0 && x < gx1) continue;    // 绿色署名区交给 cleanLogoSignature
+        const v = wmDev[row + x];
+        if (v > WM_SEED_T) { m[row + x] = 1; cand[row + x] = 1; }
+        else if (v > WM_GROW_T) cand[row + x] = 1;
+      }
+    }
+    for (let it = 0; it < 8; it++) {
+      let grown = 0;
+      for (let y = 0; y < h; y++) {
+        const row = y * w;
+        for (let x = 0; x < w; x++) {
+          if (m[row + x] || !cand[row + x]) continue;
+          const up = y > 0 && m[row - w + x];
+          const dn = y < h - 1 && m[row + w + x];
+          const lf = x > 0 && m[row + x - 1];
+          const rt = x < w - 1 && m[row + x + 1];
+          if (up || dn || lf || rt) { m[row + x] = 1; grown++; }
+        }
+      }
+      if (!grown) break;
+    }
+    cand = null;
+
+    let cnt = 0, minX = w, maxX = -1, minY = h, maxY = -1;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (!m[y * w + x]) continue;
+        cnt++;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+    }
+    // 结构检查：必须是一整行、够宽，但也不能糊成大块
+    if (cnt < area * 0.005 || cnt > area * 0.35) return null;
+    if (maxX - minX < w * 0.30 || maxY - minY < 6) return null;
+    wmMed = wmDev;
+    return maskMorph(m, w, h, true);   // 外扩 1px，带上抗锯齿边
+  }
+
+  function applyFooterMask(ctx, W, H) {
+    if (!wmMask || !wmMed || W !== wmW || H < wmBH) return false;
+    const bh = wmBH, area = W * bh;
+    const strip = ctx.getImageData(0, H - bh, W, bh);
+    const d = strip.data;
+
+    // 关键事实：这行灰字在每页里的「上下位置」会浮动几像素，跨页取交集只能剩下共同覆盖的那一段。
+    // 所以分成两步：
+    //   ① 全局掩膜只用来定「字行可能出现在哪几行、哪一段 x」（位置先验）；
+    //   ② 真正要清哪些像素由这页自己的 dev = (背景−亮度)/背景 决定 —— 水印是半透明灰，
+    //      dev 就是它的覆盖率 a，反解 obs/(1−a) 即可还原，纹理不动。
+    // 只吃「浓度落在灰字区间 + 横向短段」的像素：更黑的是插画线条，更长的是插画结构，都不碰。
+    const lum0 = new Float32Array(area);
+    for (let i = 0, p = 0; i < area; i++, p += 4) lum0[i] = (d[p] + d[p + 1] + d[p + 2]) / 3;
+    const bg0 = boxMeanLum(lum0, null, W, bh, WM_BG_R);
+
+    let yLo = bh, yHi = -1, xLo = W, xHi = -1;
+    for (let y = 0; y < bh; y++) {
+      let c = 0;
+      for (let x = 0; x < W; x++) if (wmMask[y * W + x]) {
+        c++;
+        if (x < xLo) xLo = x; if (x > xHi) xHi = x;
+      }
+      if (c >= 2) { if (y < yLo) yLo = y; if (y > yHi) yHi = y; }
+    }
+    if (yHi < yLo) return false;
+    yLo = Math.max(0, yLo - WM_BAND_PAD); yHi = Math.min(bh - 1, yHi + WM_BAND_PAD);
+
+    const dev = new Float32Array(area);
+    for (let y = yLo; y <= yHi; y++) {
+      const row = y * W;
+      for (let x = xLo; x <= xHi; x++) {
+        const i = row + x, b = bg0[i];
+        if (b < 40) continue;                        // 太暗的地方量不出比例
+        const v = (b - lum0[i]) / b;
+        if (v >= WM_DEV_LO && v <= WM_DEV_HI) dev[i] = v;
+      }
+    }
+
+    let cnt = 0, devSum = 0;
+    for (let y = yLo; y <= yHi; y++) {
+      const row = y * W;
+      let x = xLo;
+      while (x <= xHi) {
+        if (!dev[row + x]) { x++; continue; }
+        let x1 = x;
+        while (x1 <= xHi && dev[row + x1]) x1++;
+        if (x1 - x <= WM_RUN_MAX) {                  // 短段才可能是笔画
+          for (let xx = x; xx < x1; xx++) {
+            const i = row + xx, p = i * 4;
+            const k = 1 / (1 - dev[i]);
+            d[p]     = Math.min(255, d[p]     * k);
+            d[p + 1] = Math.min(255, d[p + 1] * k);
+            d[p + 2] = Math.min(255, d[p + 2] * k);
+            cnt++; devSum += dev[i];
+          }
+        }
+        x = x1;
+      }
+    }
+    if (cnt < 120) return false;
+    wmLastA = devSum / cnt;                       // 平均覆盖率，正常 0.10~0.30
+
+    ctx.putImageData(strip, 0, H - bh);
+    return true;
+  }
+
+  function cleanWatermark(canvas, opts) {
+    opts = opts || {};
     const ctx = canvas.getContext('2d');
     const W = canvas.width, H = canvas.height;
     let changed = false;
+    let stripOk = false;      // 底带是否「背景单一」，即主色填充这条路走通了
+    let fillRan = false;      // 底带是否真的被整带/选择性填成了主色（水印浅时不会走）
+    let masked = false;       // 是否用模板修补了插画页脚
 
     // ---- 顶部「人民教育出版社」书法字 ----
     // 水印笔迹永远比背景「深」：灰字压白底、墨绿字压彩带都是如此；
@@ -650,7 +924,9 @@
             Math.abs(d[p + 1] - cg) <= BOTTOM_TOL &&
             Math.abs(d[p + 2] - cb) <= BOTTOM_TOL) near++;
       }
-      if (near / total >= BOTTOM_SAME_RATIO && near < total) {
+      const uniform = near / total >= BOTTOM_SAME_RATIO;
+      if (uniform && near < total) {
+        fillRan = true;
         // 底带里可能有深色正文（页码、页脚小字）与水印同行 → 带深色内容保护的选择性填充
         const dark = new Uint8Array(total);
         let darkCnt = 0;
@@ -683,10 +959,18 @@
         ctx.putImageData(strip, 0, H - bh);
         changed = true;
       }
+      // 底带「背景单一」= 主色占比达标。注意 near===total 的纯色页也算单一（只是没水印可擦），
+      // 所以判定不能带 near < total。
+      stripOk = uniform;
+      // 学习：只有「主色填充没擦到」的页才可能是带灰字的插画页脚页，用它们自己的响应做跨页中值。
+      // 必须在填充之前取数据 —— 填完整带都是主色就再也看不出「哪里曾是水印」了（本分支恰好没填）。
+      if (opts.learn && !fillRan) learnFooterFootprint(d, W, bh);
     }
+    // ---- 模板修补：底带背景不单一（插画铺满页脚），或主色填充根本没走（水印很浅）→ 局部补掉灰字 ----
+    if ((!stripOk || !fillRan) && opts.applyMask && applyFooterMask(ctx, W, H)) { changed = true; masked = true; }
 
     // ---- 底部「人民教育出版社」绿色书法署名（白页/照片页都要清） ----
     if (cleanLogoSignature(ctx, W, H)) changed = true;
-    return changed;
+    return { changed, stripOk, fillRan, masked };
   }
 })();
