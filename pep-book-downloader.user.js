@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         人教教材阅读器 · 下载助手
 // @namespace    pep-book-downloader
-// @version      1.0.2
+// @version      1.1.0
 // @description  在人教教材在线阅读器底部工具栏加一个「下载」按钮，点击后弹窗显示进度，自动抓取全部页面、去水印并打包 ZIP 下载。仅供个人学习使用。
 // @author       hackerorange
 // @match        https://book.pep.com.cn/*
@@ -25,6 +25,8 @@
   const DARK_PROTECT = 160;   // 底部亮度低于此值视为深色正文（页码等），填充时保护
   const BOTTOM_SAME_RATIO = 0.95;
   const BOTTOM_TOL = 64;
+  // 页面底部「人民教育出版社」绿色书法署名：固定居中，占比很小
+  const LOGO_ZONE = { x0: 0.30, x1: 0.70, y0: 0.955 };
 
   // ===== 全局状态（页面不刷新则缓存一直有效，可断点续传）=====
   let cache = null;          // Array<Blob|null>，下标 = 页码
@@ -383,6 +385,139 @@
     return patchJpegDensity(out, dens);
   }
 
+  // ---------- 底部绿色署名清除 ----------
+  // 掩膜膨胀（方形核）：把笔画外扩 r 像素，连带抗锯齿边一起处理
+  function dilateMask(mask, w, h, r) {
+    const out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (!mask[y * w + x]) continue;
+        const y0 = Math.max(0, y - r), y1 = Math.min(h - 1, y + r);
+        const x0 = Math.max(0, x - r), x1 = Math.min(w - 1, x + r);
+        for (let yy = y0; yy <= y1; yy++) out.fill(1, yy * w + x0, yy * w + x1 + 1);
+      }
+    }
+    return out;
+  }
+
+  // 被掩膜的像素用「同一行左右最近的非掩膜像素」线性插值补上。
+  // 选横向是因为署名笔画多为竖向笔划：一行内笔画宽度很小，左右邻居就在旁边，
+  // 取过来的背景色最接近；纵向插值会拉出竖条。
+  function fillByNeighbors(data, mask, w, h) {
+    const left = new Int32Array(w), right = new Int32Array(w);
+    for (let y = 0; y < h; y++) {
+      const base = y * w;
+      let last = -1;
+      for (let x = 0; x < w; x++) { left[x] = last; if (!mask[base + x]) last = x; }
+      last = -1;
+      for (let x = w - 1; x >= 0; x--) { right[x] = last; if (!mask[base + x]) last = x; }
+      for (let x = 0; x < w; x++) {
+        if (!mask[base + x]) continue;
+        const p = (base + x) * 4;
+        const l = left[x], r = right[x];
+        if (l >= 0 && r >= 0) {
+          const t = (x - l) / (r - l);
+          const pl = (base + l) * 4, pr = (base + r) * 4;
+          data[p] = data[pl] * (1 - t) + data[pr] * t;
+          data[p + 1] = data[pl + 1] * (1 - t) + data[pr + 1] * t;
+          data[p + 2] = data[pl + 2] * (1 - t) + data[pr + 2] * t;
+        } else {
+          const q = l >= 0 ? (base + l) * 4 : (base + r) * 4;
+          data[p] = data[q]; data[p + 1] = data[q + 1]; data[p + 2] = data[q + 2];
+        }
+      }
+    }
+  }
+
+  // 底部居中的「人民教育出版社」绿色书法署名：定位 → 掩膜 → 插值抹掉。
+  // 白页上等价于填白；照片页上取左右邻像素，接缝不可见。
+  function cleanLogoSignature(ctx, W, H) {
+    const sx = Math.round(W * LOGO_ZONE.x0);
+    const sw = Math.round(W * (LOGO_ZONE.x1 - LOGO_ZONE.x0));
+    const sy = Math.round(H * LOGO_ZONE.y0);
+    const sh = H - sy;
+    if (sw <= 8 || sh <= 8) return false;
+
+    const band = ctx.getImageData(sx, sy, sw, sh).data;
+    // 找强绿色笔画（墨绿，远高于红蓝通道）
+    let minX = sw, maxX = -1, minY = sh, maxY = -1, cnt = 0;
+    for (let y = 0; y < sh; y++) {
+      for (let x = 0; x < sw; x++) {
+        const p = (y * sw + x) * 4;
+        if (band[p + 1] - Math.max(band[p], band[p + 2]) > 10 && band[p + 1] > 35) {
+          cnt++;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (cnt < 80) return false;                                   // 这页没有署名
+    if (maxX - minX < W * 0.12 || maxY - minY < 10) return false;  // 太小，是零散绿点
+    if (maxX - minX > W * 0.45) return false;                      // 太宽，像照片里的绿色区域
+
+    const PAD = 6;
+    const bx0 = Math.max(0, sx + minX - PAD);
+    const by0 = Math.max(0, sy + minY - PAD);
+    const bx1 = Math.min(W, sx + maxX + PAD + 1);
+    const by1 = Math.min(H, sy + maxY + PAD + 1);
+    const bw = bx1 - bx0, bh = by1 - by0;
+    const img = ctx.getImageData(bx0, by0, bw, bh);
+    const d = img.data;
+    const src = new Uint8ClampedArray(d);   // 掩膜判定始终基于原图，避免被已填的像素带偏
+
+    const isGreen = (i, thr) => {
+      const p = i * 4;
+      return src[p + 1] - Math.max(src[p], src[p + 2]) > thr && src[p + 1] > 30;
+    };
+
+    const seed = new Uint8Array(bw * bh);
+    for (let i = 0; i < seed.length; i++) if (isGreen(i, 10)) seed[i] = 1;
+
+    // 第一遍：笔画 + 3px 膨胀（吃掉抗锯齿边）
+    fillByNeighbors(d, dilateMask(seed, bw, bh, 3), bw, bh);
+
+    // 背景是否「近白页脚」：白页可以放开手脚多清一圈；照片页要保守，否则会把
+    // 明暗渐变的背景当成残迹，补出一块发亮的色块
+    let bright = 0, sampled = 0;
+    for (let i = 0; i < seed.length; i++) {
+      if (seed[i]) continue;
+      const p = i * 4;
+      sampled++;
+      if ((src[p] + src[p + 1] + src[p + 2]) / 3 >= 235) bright++;
+    }
+    const whiteFooter = sampled > 0 && bright / sampled >= 0.85;
+    const nearR = whiteFooter ? 10 : 6;
+    const darkTol = whiteFooter ? 12 : 16;
+
+    // 第二遍：笔画外 nearR 内仍偏绿 / 明显比本行背景暗的残点，再补一次
+    const near = dilateMask(seed, bw, bh, nearR);
+    const lum = new Float32Array(bw * bh);
+    for (let i = 0; i < lum.length; i++) {
+      const p = i * 4;
+      lum[i] = (d[p] + d[p + 1] + d[p + 2]) / 3;
+    }
+    const rowMed = new Float32Array(bh);
+    const rowBuf = new Float32Array(bw);
+    for (let y = 0; y < bh; y++) {
+      rowBuf.set(lum.subarray(y * bw, y * bw + bw));
+      const sorted = Array.from(rowBuf).sort((a, b) => a - b);
+      rowMed[y] = sorted[sorted.length >> 1];
+    }
+    const resid = new Uint8Array(bw * bh);
+    let residCnt = 0;
+    for (let i = 0; i < resid.length; i++) {
+      if (!near[i]) continue;
+      const y = (i / bw) | 0;
+      if (isGreen(i, 3) || lum[i] < rowMed[y] - darkTol) { resid[i] = 1; residCnt++; }
+    }
+    if (residCnt) fillByNeighbors(d, dilateMask(resid, bw, bh, 1), bw, bh);
+
+    ctx.putImageData(img, bx0, by0);
+    return true;
+  }
+
   function cleanWatermark(canvas) {
     const ctx = canvas.getContext('2d');
     const W = canvas.width, H = canvas.height;
@@ -549,6 +684,9 @@
         changed = true;
       }
     }
+
+    // ---- 底部「人民教育出版社」绿色书法署名（白页/照片页都要清） ----
+    if (cleanLogoSignature(ctx, W, H)) changed = true;
     return changed;
   }
 })();
