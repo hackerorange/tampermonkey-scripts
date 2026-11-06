@@ -263,15 +263,15 @@ DOMContentLoaded（readyState=loading 时）┘
 - **断点续传**：已抓页面缓存在内存数组中，不刷新页面可继续
 - **已知限制**：遇 WAF 滑块验证时暂停并提示，需人工过验证后重新点击；接口或目录结构变更可能失效；翻页图片尺寸过小/过大时去水印判定阈值需微调（`TOP_BOX` / `BOTTOM_H` / `STRONG_FRAC`）
 
-## 5. `gstack-deploy-log-enhance.user.js`（v1.2.0）
+## 5. `gstack-deploy-log-enhance.user.js`（v1.3.0）
 
-**作用**：GStack 部署详情页（`#/workspace/**/deploy/details`）日志区增强——日志工具条「刷新」左侧注入三个控件，顺序 `[最大化][清理][自动刷新组][刷新]`，按钮复用站点 Fusion Next 类名（`next-btn next-medium next-btn-normal`）融入原生 UI。
+**作用**：GStack 部署详情页（`#/workspace/**/deploy/details`）日志区增强——日志工具条「刷新」左侧注入两个按钮，顺序 `[最大化][清理][刷新]`，按钮复用站点 Fusion Next 类名（`next-btn next-medium next-btn-normal`）融入原生 UI。
 
 - **站点**：`https://gstack.glodon.com/*`
 - **识别锚点**：日志块 `.workload-details-log`（内含 Pod 工具条 `.header` 与 `react-codemirror2` 的 CodeMirror）；「刷新」按钮按块内可见 button 文本精确匹配；CodeMirror 实例挂在其 wrapper 元素的 `.CodeMirror` 属性上
 - **最大化**：块加 `gstack-log-maxed` 类 → `position:fixed` 铺满视口（z-index 99999）、盖住部署详情；内部 flex 链撑开 `next-loading → .next-loading-wrap → react-codemirror2`，`.CodeMirror{height:100%!important}` 覆盖内联 100vh；容器尺寸变化后 `cm.refresh()`。再点一次或按 **Esc** 还原
 - **清理**：点击走 CodeMirror API `setValue('')`——change 事件让 react-codemirror2 把空串同步回 React state，站点重渲染不会带回旧日志（直接改 DOM 会被恢复）；拿不到实例时清空 `.CodeMirror-code` 兜底；清后 `cm.refresh()`
-- **自动刷新**：开关按钮（开=primary 样式）+ 间隔下拉（1/2/3/5/10s，默认 3s，localStorage `gstack-log-auto-sec` 记忆）；tick 自动点站点「刷新」；用 `getScrollInfo()` 判断日志是否停在底部（距底 ≤40px），是则刷新后 `scrollTo` 底部（tail -f 跟随），用户往上翻了不跟随；`document.hidden` 时跳过；离开日志页自动停（`setAuto(false)`）
 - **不换行**：`cm.setOption('lineWrapping', false)`；拿不到实例时给 wrapper 加 `gstack-nowrap-fallback` 类走 CSS 兜底（`pre.CodeMirror-line { white-space: pre !important }`）
+- **v1.3.0 变更**：**移除 v1.2.0 的「自动刷新」功能**（开关按钮 + 间隔下拉，实测有 bug），扫描时会顺带清掉旧版残留的 `#gstack-log-auto-wrap` / `#gstack-log-auto-btn` / `#gstack-log-auto-interval` 控件
 - **稳定性（核心约束）**：`scan()` 由 MutationObserver（150ms 节流）+ 1s 兜底轮询驱动，**只在控件缺失/错位时才写 DOM**——同值重设 `textContent` 也会触发 childList 突变，会被 Observer 捕获形成无限扫描循环导致页面假死（v1.1.0 踩过）；按钮监听 `_gstackBound` 只绑一次，点击时现取可见块避免闭包过期；React 重绘整块替换 DOM 后扫描自动补回控件、恢复最大化状态
 - **已知限制**：站点升级改了 `.workload-details-log` 结构、按钮文案或 react-codemirror2 引入方式时需同步选择器；清理只清视图层，站点重新拉取日志后会重新渲染

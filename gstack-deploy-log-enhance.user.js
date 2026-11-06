@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GStack 部署日志增强
 // @namespace    zhongct.gstack.deploy.log.maximize
-// @version      1.2.0
-// @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「清理」「自动刷新」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情；清理一键清空当前日志内容；自动刷新按可选间隔（1/2/3/5/10s）自动点刷新，日志在底部时自动跟随最新行（类似 tail -f）；日志不自动换行（横向滚动）；最大化后按 Esc 或再点一次还原。
+// @version      1.3.0
+// @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「清理」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情，Esc 或再点一次还原；清理一键清空当前日志内容；日志不自动换行（横向滚动）。
 // @author       zhongct
 // @match        https://gstack.glodon.com/*
 // @grant        none
@@ -21,10 +21,8 @@
   const MAX_CLASS = 'gstack-log-maxed';
   const BTN_ID = 'gstack-log-max-btn';
   const CLEAR_BTN_ID = 'gstack-log-clear-btn';
-  const AUTO_WRAP_ID = 'gstack-log-auto-wrap';
-  const AUTO_BTN_ID = 'gstack-log-auto-btn';
-  const AUTO_SELECT_ID = 'gstack-log-auto-interval';
-  const AUTO_KEY = 'gstack-log-auto-sec';
+  // v1.2.0 的「自动刷新」控件 id：升级后页面上可能残留，扫描时清掉
+  const STALE_IDS = ['gstack-log-auto-wrap', 'gstack-log-auto-btn', 'gstack-log-auto-interval'];
 
   // ---------- 样式 ----------
   function injectStyle() {
@@ -48,10 +46,6 @@
       /* 拿不到 CodeMirror 实例时的兜底：CSS 直接关掉换行 */
       .CodeMirror.gstack-nowrap-fallback pre.CodeMirror-line,
       .CodeMirror.gstack-nowrap-fallback pre.CodeMirror-line-like { white-space: pre !important; }
-      /* 自动刷新间隔下拉 */
-      #${AUTO_SELECT_ID} { height: 24px; font-size: 12px; color: #333;
-        border: 1px solid #dcdfe6; border-radius: 3px; background: #fff;
-        padding: 0 2px; margin-right: 8px; cursor: pointer; }
     `;
     document.head.appendChild(style);
   }
@@ -159,94 +153,7 @@
       block.classList.contains(MAX_CLASS) ? '还原' : '最大化');
   }
 
-  // ---------- 自动刷新 ----------
-  let autoOn = false;
-  let autoTimer = null;
-  let autoSec = 3;
-  try {
-    const saved = parseInt(localStorage.getItem(AUTO_KEY), 10);
-    if ([1, 2, 3, 5, 10].indexOf(saved) >= 0) autoSec = saved;
-  } catch (e) { /* localStorage 不可用就用默认值 */ }
-
-  function autoTick() {
-    if (!autoOn || document.hidden) return;   // 页面切走时暂停，回来继续
-    const block = visibleLogBlock();
-    if (!block) return;
-    const refreshBtn = findRefreshBtn(block);
-    if (!refreshBtn) return;
-    const cm = cmOf(block);
-    // 只有本来就停在底部时才跟随滚动到新行，用户往上翻了就不打扰
-    let atBottom = false;
-    if (cm) {
-      try {
-        const info = cm.getScrollInfo();
-        atBottom = info.top + info.clientHeight >= info.height - 40;
-      } catch (e) { /* ignore */ }
-    }
-    refreshBtn.click();
-    if (atBottom && cm) {
-      setTimeout(() => {
-        try {
-          const info = cm.getScrollInfo();
-          cm.scrollTo(null, info.height);
-        } catch (e) { /* ignore */ }
-      }, 400);
-    }
-  }
-
-  function setAuto(on) {
-    autoOn = on;
-    if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
-    if (on) autoTimer = setInterval(autoTick, autoSec * 1000);
-    updateAutoUI();
-  }
-
-  function setAutoSec(sec) {
-    autoSec = sec;
-    try { localStorage.setItem(AUTO_KEY, String(sec)); } catch (e) { /* ignore */ }
-    if (autoOn) setAuto(true);   // 重启定时器，立即生效
-  }
-
-  function updateAutoUI() {
-    const btn = document.getElementById(AUTO_BTN_ID);
-    if (!btn) return;
-    const cls = 'next-btn next-medium ' + (autoOn ? 'next-btn-primary' : 'next-btn-normal');
-    if (btn.className !== cls) btn.className = cls;
-    setText(btn.querySelector('.next-btn-helper') || btn,
-      autoOn ? '自动刷新 开' : '自动刷新 关');
-    const sel = document.getElementById(AUTO_SELECT_ID);
-    if (sel && sel.value !== String(autoSec)) sel.value = String(autoSec);
-  }
-
-  function makeAutoControls() {
-    const wrap = document.createElement('span');
-    wrap.id = AUTO_WRAP_ID;
-    wrap.style.display = 'inline-flex';
-    wrap.style.alignItems = 'center';
-
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.id = AUTO_BTN_ID;
-    btn.className = 'next-btn next-medium next-btn-normal';
-    btn.innerHTML = '<span class="next-btn-helper">自动刷新 关</span>';
-    btn.addEventListener('click', () => setAuto(!autoOn));
-
-    const sel = document.createElement('select');
-    sel.id = AUTO_SELECT_ID;
-    sel.title = '自动刷新间隔';
-    for (const s of [1, 2, 3, 5, 10]) {
-      const opt = document.createElement('option');
-      opt.value = String(s);
-      opt.textContent = s + 's';
-      sel.appendChild(opt);
-    }
-    sel.addEventListener('change', () => setAutoSec(parseInt(sel.value, 10) || 3));
-
-    wrap.append(btn, sel);
-    return wrap;
-  }
-
-  // ---------- 注入按钮：插在「刷新」左边，顺序 [最大化][清理][自动刷新组][刷新] ----------
+  // ---------- 注入按钮：插在「刷新」左边，顺序 [最大化][清理][刷新] ----------
   function makeButton() {
     // 复用站点 Fusion Next 按钮的类名，外观与「下载」一致
     const btn = document.createElement('button');
@@ -275,30 +182,28 @@
     const refreshBtn = findRefreshBtn(block);
     if (!refreshBtn) return;
 
-    // 目标顺序 [最大化][清理][自动刷新组][刷新]。
+    // 目标顺序 [最大化][清理][刷新]。
     // 注意：只在缺失/错位时才动 DOM——每轮扫描哪怕无意义地重排一次，
     // 都会被 MutationObserver 捕获形成 无限扫描循环（页面假死）
     const parent = refreshBtn.parentNode;
-    let autoWrap = block.querySelector('#' + AUTO_WRAP_ID);
+    // 清掉 v1.2.0 自动刷新的残留控件（升级自旧版且页面未整刷时可能还在）
+    for (const id of STALE_IDS) {
+      const stale = block.querySelector('#' + id);
+      if (stale) stale.remove();
+    }
     let maxBtn = block.querySelector('#' + BTN_ID);
     let clearBtn = block.querySelector('#' + CLEAR_BTN_ID);
-    if (!autoWrap) {
-      autoWrap = makeAutoControls();
-      parent.insertBefore(autoWrap, refreshBtn);
-    }
     if (!clearBtn) {
       clearBtn = makeClearButton();
-      parent.insertBefore(clearBtn, autoWrap);
+      parent.insertBefore(clearBtn, refreshBtn);
     }
     if (!maxBtn) {
       maxBtn = makeButton();
       parent.insertBefore(maxBtn, clearBtn);
     }
-    if (maxBtn.nextElementSibling !== clearBtn || clearBtn.nextElementSibling !== autoWrap ||
-        autoWrap.nextElementSibling !== refreshBtn) {
+    if (maxBtn.nextElementSibling !== clearBtn || clearBtn.nextElementSibling !== refreshBtn) {
       parent.insertBefore(maxBtn, clearBtn);
-      parent.insertBefore(clearBtn, autoWrap);
-      parent.insertBefore(autoWrap, refreshBtn);
+      parent.insertBefore(clearBtn, refreshBtn);
     }
     // 只绑定一次（scan 会被 MutationObserver 频繁调用，重复绑定会叠加）；
     // 点击时现取可见块，避免闭包里的 block 过期
@@ -317,7 +222,6 @@
       });
     }
     updateBtnText(block);
-    updateAutoUI();
 
     // 最大化状态下块被 React 重绘换新：重新套上最大化样式
     if (maxed && !block.classList.contains(MAX_CLASS)) {
@@ -342,7 +246,6 @@
       });
     } else {
       if (maxed) maxed = false;      // 日志块整个没了（切页）：复位
-      if (autoOn) setAuto(false);    // 自动刷新也停掉
     }
   }
 
