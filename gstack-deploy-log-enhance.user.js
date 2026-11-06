@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GStack 部署日志增强
 // @namespace    zhongct.gstack.deploy.log.maximize
-// @version      1.3.0
+// @version      1.3.1
 // @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「清理」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情，Esc 或再点一次还原；清理一键清空当前日志内容；日志不自动换行（横向滚动）。
 // @author       zhongct
 // @match        https://gstack.glodon.com/*
@@ -236,17 +236,34 @@
     scanTimer = setTimeout(() => { scanTimer = null; scan(); }, 150);
   }
 
+  // 已完整装饰过的块：快路径直接跳过，避免日志高频流式渲染期间
+  // 每次 scan 都做 getBoundingClientRect（强制同步布局）造成卡顿
+  const decorated = new WeakSet();
+  let currentBlock = null;
+
   function scan() {
-    const block = visibleLogBlock();
-    if (block) {
-      decorate(block);
-      // 隐藏的旧块残留：清掉最大化标记
-      document.querySelectorAll('.workload-details-log.' + MAX_CLASS).forEach((b) => {
-        if (b !== block) b.classList.remove(MAX_CLASS);
-      });
-    } else {
-      if (maxed) maxed = false;      // 日志块整个没了（切页）：复位
+    // 快路径：上次记录的块还活着、控件齐全、最大化状态一致 → 直接返回，
+    // 全程只查 isConnected（不触发布局），日志高频渲染时零额外开销
+    const b = currentBlock;
+    if (b && b.isConnected && decorated.has(b) &&
+        b.querySelector('#' + BTN_ID) &&
+        b.querySelector('#' + CLEAR_BTN_ID) &&
+        (!maxed || b.classList.contains(MAX_CLASS))) {
+      return;
     }
+    const block = visibleLogBlock();
+    if (!block) {
+      currentBlock = null;
+      if (maxed) maxed = false;      // 日志块整个没了（切页）：复位
+      return;
+    }
+    currentBlock = block;
+    decorate(block);
+    decorated.add(block);
+    // 隐藏的旧块残留：清掉最大化标记
+    document.querySelectorAll('.workload-details-log.' + MAX_CLASS).forEach((el) => {
+      if (el !== block) el.classList.remove(MAX_CLASS);
+    });
   }
 
   function init() {
