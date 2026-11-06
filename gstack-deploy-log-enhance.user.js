@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GStack 部署日志增强
 // @namespace    zhongct.gstack.deploy.log.maximize
-// @version      1.1.0
-// @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」与「自动刷新」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情；自动刷新按可选间隔（1/2/3/5/10s）自动点刷新，日志在底部时自动跟随最新行（类似 tail -f）；日志不自动换行（横向滚动）；最大化后按 Esc 或再点一次还原。
+// @version      1.2.0
+// @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「清理」「自动刷新」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情；清理一键清空当前日志内容；自动刷新按可选间隔（1/2/3/5/10s）自动点刷新，日志在底部时自动跟随最新行（类似 tail -f）；日志不自动换行（横向滚动）；最大化后按 Esc 或再点一次还原。
 // @author       zhongct
 // @match        https://gstack.glodon.com/*
 // @grant        none
@@ -20,6 +20,7 @@
   const LOG = '[GStack日志增强]';
   const MAX_CLASS = 'gstack-log-maxed';
   const BTN_ID = 'gstack-log-max-btn';
+  const CLEAR_BTN_ID = 'gstack-log-clear-btn';
   const AUTO_WRAP_ID = 'gstack-log-auto-wrap';
   const AUTO_BTN_ID = 'gstack-log-auto-btn';
   const AUTO_SELECT_ID = 'gstack-log-auto-interval';
@@ -108,6 +109,21 @@
   function refreshCM(block) {
     const cm = cmOf(block);
     if (cm) { try { cm.refresh(); } catch (e) { /* ignore */ } }
+  }
+
+  // ---------- 清理日志 ----------
+  // 走 CodeMirror API：setValue 会派发 change 事件，react-codemirror2 会把
+  // 空串同步回 React state，之后重渲染也不会把旧日志带回来
+  function clearLog(block) {
+    const cm = cmOf(block);
+    if (cm) {
+      try { cm.setValue(''); } catch (e) { /* 落到 DOM 兜底 */ }
+    } else {
+      // 兜底：直接清掉渲染出来的行（React 下次渲染可能恢复，但拿不到实例时只能这样）
+      block.querySelectorAll('.CodeMirror-code').forEach((n) => { n.textContent = ''; });
+    }
+    refreshCM(block);
+    console.log(LOG, '已清空当前日志');
   }
 
   // ---------- 最大化 / 还原 ----------
@@ -230,7 +246,7 @@
     return wrap;
   }
 
-  // ---------- 注入按钮：插在「刷新」左边，顺序 [最大化][自动刷新组][刷新] ----------
+  // ---------- 注入按钮：插在「刷新」左边，顺序 [最大化][清理][自动刷新组][刷新] ----------
   function makeButton() {
     // 复用站点 Fusion Next 按钮的类名，外观与「下载」一致
     const btn = document.createElement('button');
@@ -242,28 +258,46 @@
     return btn;
   }
 
+  function makeClearButton() {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = CLEAR_BTN_ID;
+    btn.className = 'next-btn next-medium next-btn-normal';
+    btn.title = '清空当前日志内容';
+    btn.style.marginRight = '8px';
+    btn.innerHTML = '<span class="next-btn-helper">清理</span>';
+    return btn;
+  }
+
   function decorate(block) {
     ensureNoWrap(block);   // 日志容器始终不自动换行
 
     const refreshBtn = findRefreshBtn(block);
     if (!refreshBtn) return;
 
-    // 目标顺序 [最大化][自动刷新组][刷新]。
+    // 目标顺序 [最大化][清理][自动刷新组][刷新]。
     // 注意：只在缺失/错位时才动 DOM——每轮扫描哪怕无意义地重排一次，
     // 都会被 MutationObserver 捕获形成 无限扫描循环（页面假死）
     const parent = refreshBtn.parentNode;
     let autoWrap = block.querySelector('#' + AUTO_WRAP_ID);
     let maxBtn = block.querySelector('#' + BTN_ID);
+    let clearBtn = block.querySelector('#' + CLEAR_BTN_ID);
     if (!autoWrap) {
       autoWrap = makeAutoControls();
       parent.insertBefore(autoWrap, refreshBtn);
     }
+    if (!clearBtn) {
+      clearBtn = makeClearButton();
+      parent.insertBefore(clearBtn, autoWrap);
+    }
     if (!maxBtn) {
       maxBtn = makeButton();
-      parent.insertBefore(maxBtn, refreshBtn);
+      parent.insertBefore(maxBtn, clearBtn);
     }
-    if (maxBtn.nextElementSibling !== autoWrap || autoWrap.nextElementSibling !== refreshBtn) {
-      parent.insertBefore(maxBtn, refreshBtn);
+    if (maxBtn.nextElementSibling !== clearBtn || clearBtn.nextElementSibling !== autoWrap ||
+        autoWrap.nextElementSibling !== refreshBtn) {
+      parent.insertBefore(maxBtn, clearBtn);
+      parent.insertBefore(clearBtn, autoWrap);
       parent.insertBefore(autoWrap, refreshBtn);
     }
     // 只绑定一次（scan 会被 MutationObserver 频繁调用，重复绑定会叠加）；
@@ -273,6 +307,13 @@
       maxBtn.addEventListener('click', () => {
         const b = visibleLogBlock();
         if (b) toggleMax(b);
+      });
+    }
+    if (!clearBtn._gstackBound) {
+      clearBtn._gstackBound = true;
+      clearBtn.addEventListener('click', () => {
+        const b = visibleLogBlock();
+        if (b) clearLog(b);
       });
     }
     updateBtnText(block);
