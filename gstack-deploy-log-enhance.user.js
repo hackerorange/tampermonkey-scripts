@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GStack 部署日志增强
 // @namespace    zhongct.gstack.deploy.log.maximize
-// @version      1.3.2
+// @version      1.3.3
 // @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「清理」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情，Esc 或再点一次还原；清理一键清空当前日志内容；日志不自动换行（横向滚动）。
 // @author       zhongct
 // @match        https://gstack.glodon.com/*
@@ -43,9 +43,10 @@
       .${MAX_CLASS} .header { flex: 0 0 auto; }
       .${MAX_CLASS} .react-codemirror2 { flex: 1 1 0; min-height: 0; }
       .${MAX_CLASS} .CodeMirror { height: 100% !important; }
-      /* 日志始终不自动换行：直接按日志容器限定，站点重渲染/类被加回来也不失效 */
-      .workload-details-log .CodeMirror pre.CodeMirror-line,
-      .workload-details-log .CodeMirror pre.CodeMirror-line-like { white-space: pre !important; }
+      /* 日志不自动换行：只在 CodeMirror 未处于换行模式时生效，
+         避免和站点自己的 wrap 模式打架（强制 pre 会让 CM 反复重测行高） */
+      .workload-details-log .CodeMirror:not(.CodeMirror-wrap) pre.CodeMirror-line,
+      .workload-details-log .CodeMirror:not(.CodeMirror-wrap) pre.CodeMirror-line-like { white-space: pre !important; }
     `;
     document.head.appendChild(style);
   }
@@ -87,32 +88,41 @@
     return wrapper && wrapper.CodeMirror ? wrapper.CodeMirror : null;
   }
 
+  // 关掉自动换行：给实例的 setOption 打补丁，站点之后任何「想开换行」的调用
+  // 都被改成关。只做一次（O(1) 标记），避免每轮扫描反复 setOption ——
+  // setOption 会让 CodeMirror 重测量全部行，几千行日志下就是卡顿本身
   function ensureNoWrap(block) {
     const wrapper = block.querySelector('.CodeMirror');
     if (!wrapper) return;
     const cm = wrapper.CodeMirror;   // CodeMirror 构造时挂在 wrapper 元素上
-    if (cm) {
-      try {
-        if (cm.getOption('lineWrapping')) cm.setOption('lineWrapping', false);
-        // 站点重渲染可能只把类加回来而实例选项没同步，类也顺手压掉（配合永久 CSS）
-        wrapper.classList.remove('CodeMirror-wrap');
-        return;
-      } catch (e) { /* 落到下面的类/CSS 兜底 */ }
+    if (!cm) {
+      // 拿不到实例：CSS（按日志容器限定）已经是 pre，这里只摘掉 wrap 类
+      if (wrapper.classList.contains('CodeMirror-wrap')) wrapper.classList.remove('CodeMirror-wrap');
+      return;
     }
-    wrapper.classList.remove('CodeMirror-wrap');
-    wrapper.classList.add('gstack-nowrap-fallback');
+    if (!cm.__gstackNoWrapHooked) {
+      cm.__gstackNoWrapHooked = true;
+      const origSetOption = cm.setOption;
+      cm.setOption = function (opt, val) {
+        if (opt === 'lineWrapping' && val) val = false;   // 站点要开换行 → 一律忽略
+        return origSetOption.call(this, opt, val);
+      };
+      try { if (cm.getOption('lineWrapping')) cm.setOption('lineWrapping', false); } catch (e) { /* ignore */ }
+    }
+    if (wrapper.classList.contains('CodeMirror-wrap')) wrapper.classList.remove('CodeMirror-wrap');
   }
 
-  // 快路径里的轻量维护：只查类与实例选项（不触发布局），
-  // 站点刷新/重渲染把 lineWrapping 打开后能及时再关掉
+  // 快路径里的轻量维护：正常情况只读一个布尔标记（O(1)）；
+  // 只有类被异常加回来时才补刀，且 1 秒内最多一次，绝不反复重测量
+  let lastNoWrapFix = 0;
   function maintainNoWrap(block) {
     const wrapper = block.querySelector('.CodeMirror');
     if (!wrapper) return;
-    const wrapped = wrapper.classList.contains('CodeMirror-wrap');
     const cm = wrapper.CodeMirror;
-    let cmWrapped = false;
-    if (cm) { try { cmWrapped = !!cm.getOption('lineWrapping'); } catch (e) { /* ignore */ } }
-    if (!wrapped && !cmWrapped) return;   // 已经是不换行，什么都不做
+    if (cm && cm.__gstackNoWrapHooked && !wrapper.classList.contains('CodeMirror-wrap')) return;
+    const now = Date.now();
+    if (now - lastNoWrapFix < 1000) return;   // 节流：避免和站点抢着改造成抖动
+    lastNoWrapFix = now;
     ensureNoWrap(block);
   }
 

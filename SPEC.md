@@ -263,7 +263,7 @@ DOMContentLoaded（readyState=loading 时）┘
 - **断点续传**：已抓页面缓存在内存数组中，不刷新页面可继续
 - **已知限制**：遇 WAF 滑块验证时暂停并提示，需人工过验证后重新点击；接口或目录结构变更可能失效；翻页图片尺寸过小/过大时去水印判定阈值需微调（`TOP_BOX` / `BOTTOM_H` / `STRONG_FRAC`）
 
-## 5. `gstack-deploy-log-enhance.user.js`（v1.3.2）
+## 5. `gstack-deploy-log-enhance.user.js`（v1.3.3）
 
 **作用**：GStack 部署详情页（`#/workspace/**/deploy/details`）日志区增强——日志工具条「刷新」左侧注入两个按钮，顺序 `[最大化][清理][刷新]`，按钮复用站点 Fusion Next 类名（`next-btn next-medium next-btn-normal`）融入原生 UI。
 
@@ -271,9 +271,10 @@ DOMContentLoaded（readyState=loading 时）┘
 - **识别锚点**：日志块 `.workload-details-log`（内含 Pod 工具条 `.header` 与 `react-codemirror2` 的 CodeMirror）；「刷新」按钮按块内可见 button 文本精确匹配；CodeMirror 实例挂在其 wrapper 元素的 `.CodeMirror` 属性上
 - **最大化**：块加 `gstack-log-maxed` 类 → `position:fixed` 铺满视口（z-index 99999）、盖住部署详情；内部 flex 链撑开 `next-loading → .next-loading-wrap → react-codemirror2`，`.CodeMirror{height:100%!important}` 覆盖内联 100vh；容器尺寸变化后 `cm.refresh()`。再点一次或按 **Esc** 还原
 - **清理**：点击走 CodeMirror API `setValue('')`——change 事件让 react-codemirror2 把空串同步回 React state，站点重渲染不会带回旧日志（直接改 DOM 会被恢复）；拿不到实例时清空 `.CodeMirror-code` 兜底；清后 `cm.refresh()`
-- **不换行**：`cm.setOption('lineWrapping', false)`（CodeMirror 会自己摘掉 `CodeMirror-wrap` 类），并显式 `classList.remove('CodeMirror-wrap')` 兜底；拿不到实例时只摘类。CSS 规则按日志容器限定（`.workload-details-log .CodeMirror pre.CodeMirror-line { white-space: pre !important }`），不依赖脚本加的类，站点重渲染也不会失效
+- **不换行**：给 CodeMirror 实例的 `setOption` 打一次补丁（`__gstackNoWrapHooked` 标记幂等）——站点之后任何 `setOption('lineWrapping', true)` 都被改成 `false`，等于「一次挂钩、永久关掉」，不再每轮扫描反复 `setOption`（那会让 CM 重测量全部行，本身就是卡顿源）。挂钩时若已是 `true` 立即关一次。CSS 兜底按日志容器限定且带 `:not(.CodeMirror-wrap)`，只在非换行模式下强制 `white-space: pre`，避免与站点 wrap 模式打架导致 CM 反复测行高
 - **v1.3.0 变更**：**移除 v1.2.0 的「自动刷新」功能**（开关按钮 + 间隔下拉，实测有 bug），扫描时会顺带清掉旧版残留的 `#gstack-log-auto-wrap` / `#gstack-log-auto-btn` / `#gstack-log-auto-interval` 控件
 - **v1.3.1 变更（卡顿修复）**：日志高频流式渲染时，原先每次扫描都走 `visibleLogBlock()`（对所有块 `getBoundingClientRect` → 强制同步布局）+ `decorate`（多次 `querySelectorAll`），120～150ms 一次插在 CodeMirror 渲染管线里造成卡顿。现在 `scan()` 先走**快路径**：上次记录的块 `isConnected`、`decorated`（WeakSet）已标记、两个按钮都在、最大化状态一致时直接 return——全程只查 `isConnected` / `querySelector`，**零 DOM 写入、零布局读取**；只有块被 React 替换（`isConnected=false`）或控件缺失时才走完整装饰
 - **v1.3.2 变更（不换行丢失修复）**：站点点「刷新」/切页签会把 CodeMirror 重新初始化，`lineWrapping` 回到 `true`、`CodeMirror-wrap` 类被加回来；v1.3.1 的快路径跳过了整轮装饰，导致不换行失效。现在快路径里调 `maintainNoWrap()`——只读 `classList.contains('CodeMirror-wrap')` 与 `cm.getOption('lineWrapping')`（都不触发布局），任一为真才重新关掉换行并摘类；另有按日志容器限定的永久 CSS 兜底
+- **v1.3.3 变更（补刀反成卡顿）**：v1.3.2 每 150ms 检查一次、发现 `lineWrapping` 被打开就 `setOption(false)`，而站点每次渲染都可能把它设回 `true` → 双方来回抢，`setOption` 触发 CM 全量重测量，日志一多就卡。改为 **setOption 打补丁（一次挂钩）**：站点想开换行直接被改成关，之后快路径只读 `__gstackNoWrapHooked` 布尔标记（O(1)）；`maintainNoWrap` 仅在类被异常加回来时补刀且 1 秒内最多一次
 - **稳定性（核心约束）**：`scan()` 由 MutationObserver（150ms 节流）+ 1s 兜底轮询驱动，**只在控件缺失/错位时才写 DOM**——同值重设 `textContent` 也会触发 childList 突变，会被 Observer 捕获形成无限扫描循环导致页面假死（v1.1.0 踩过）；按钮监听 `_gstackBound` 只绑一次，点击时现取可见块避免闭包过期；React 重绘整块替换 DOM 后扫描自动补回控件、恢复最大化状态
 - **已知限制**：站点升级改了 `.workload-details-log` 结构、按钮文案或 react-codemirror2 引入方式时需同步选择器；清理只清视图层，站点重新拉取日志后会重新渲染
