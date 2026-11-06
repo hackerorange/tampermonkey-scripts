@@ -263,7 +263,7 @@ DOMContentLoaded（readyState=loading 时）┘
 - **断点续传**：已抓页面缓存在内存数组中，不刷新页面可继续
 - **已知限制**：遇 WAF 滑块验证时暂停并提示，需人工过验证后重新点击；接口或目录结构变更可能失效；翻页图片尺寸过小/过大时去水印判定阈值需微调（`TOP_BOX` / `BOTTOM_H` / `STRONG_FRAC`）
 
-## 5. `gstack-deploy-log-enhance.user.js`（v1.4.0）
+## 5. `gstack-deploy-log-enhance.user.js`（v1.4.1）
 
 **作用**：GStack 部署详情页（`#/workspace/**/deploy/details`）日志区增强——日志工具条「刷新」左侧注入两个按钮，顺序 `[最大化][清理][刷新]`，按钮复用站点 Fusion Next 类名（`next-btn next-medium next-btn-normal`）融入原生 UI。
 
@@ -277,5 +277,6 @@ DOMContentLoaded（readyState=loading 时）┘
 - **v1.3.2 变更（不换行丢失修复）**：站点点「刷新」/切页签会把 CodeMirror 重新初始化，`lineWrapping` 回到 `true`、`CodeMirror-wrap` 类被加回来；v1.3.1 的快路径跳过了整轮装饰，导致不换行失效。现在快路径里调 `maintainNoWrap()`——只读 `classList.contains('CodeMirror-wrap')` 与 `cm.getOption('lineWrapping')`（都不触发布局），任一为真才重新关掉换行并摘类；另有按日志容器限定的永久 CSS 兜底
 - **v1.3.3 变更（补刀反成卡顿）**：v1.3.2 每 150ms 检查一次、发现 `lineWrapping` 被打开就 `setOption(false)`，而站点每次渲染都可能把它设回 `true` → 双方来回抢，`setOption` 触发 CM 全量重测量，日志一多就卡。改为 **setOption 打补丁（一次挂钩）**：站点想开换行直接被改成关，之后快路径只读 `__gstackNoWrapHooked` 布尔标记（O(1)）；`maintainNoWrap` 仅在类被异常加回来时补刀且 1 秒内最多一次
 - **v1.4.0 变更（取消设置，纯 CSS）**：v1.3.3 的 setOption 补丁 + `maintainNoWrap` 整体移除——动态维护思路（纠正 / 拦截）总会和站点的渲染节奏产生交互，干脆全部去掉，改由一条**无条件 CSS 规则**永久保证不换行；快路径里连布尔标记都不用读
+- **v1.4.1 变更（最大化下浮层被盖）**：Fusion Select 下拉浮层渲染在 body 末尾、z-index 约 1001，被最大化块（z-index 99999）盖住 → 点击后「不展示」。修复：`applyMax`/`restoreMax` 时给 body 加/去 `gstack-log-maxed-body` 标记类，CSS 把 `.next-overlay-wrapper` / `.next-portal` / `.next-overlay-inner` / `.next-overlay-backdrop` 抬到 z-index 100000；日志块消失（切页）时同样清标记
 - **稳定性（核心约束）**：`scan()` 由 MutationObserver（150ms 节流）+ 1s 兜底轮询驱动，**只在控件缺失/错位时才写 DOM**——同值重设 `textContent` 也会触发 childList 突变，会被 Observer 捕获形成无限扫描循环导致页面假死（v1.1.0 踩过）；按钮监听 `_gstackBound` 只绑一次，点击时现取可见块避免闭包过期；React 重绘整块替换 DOM 后扫描自动补回控件、恢复最大化状态
 - **已知限制**：站点升级改了 `.workload-details-log` 结构、按钮文案或 react-codemirror2 引入方式时需同步选择器；清理只清视图层，站点重新拉取日志后会重新渲染

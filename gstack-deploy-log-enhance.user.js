@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GStack 部署日志增强
 // @namespace    zhongct.gstack.deploy.log.maximize
-// @version      1.4.0
-// @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「清理」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情，Esc 或再点一次还原；清理一键清空当前日志内容；日志永久不自动换行（纯 CSS，横向滚动，脚本零维护开销）。
+// @version      1.4.1
+// @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「清理」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情，Esc 或再点一次还原，Pod/Container 下拉浮层保持可用；清理一键清空当前日志内容；日志永久不自动换行（纯 CSS，横向滚动，脚本零维护开销）。
 // @author       zhongct
 // @match        https://gstack.glodon.com/*
 // @grant        none
@@ -19,6 +19,9 @@
 
   const LOG = '[GStack日志增强]';
   const MAX_CLASS = 'gstack-log-maxed';
+  // 最大化期间加在 body 上：用于把站点浮层（下拉/弹窗，挂在 body 末尾、
+  // z-index 约 1001）抬到最大化块（z-index 99999）之上，否则下拉打不开
+  const MAX_BODY_CLASS = 'gstack-log-maxed-body';
   const BTN_ID = 'gstack-log-max-btn';
   const CLEAR_BTN_ID = 'gstack-log-clear-btn';
   // v1.2.0 的「自动刷新」控件 id：升级后页面上可能残留，扫描时清掉
@@ -43,6 +46,12 @@
       .${MAX_CLASS} .header { flex: 0 0 auto; }
       .${MAX_CLASS} .react-codemirror2 { flex: 1 1 0; min-height: 0; }
       .${MAX_CLASS} .CodeMirror { height: 100% !important; }
+      /* 最大化时站点浮层容器（Select 下拉/弹窗等，渲染在 body 末尾、
+         z-index 约 1001）会被本块（z-index 99999）盖住 → 抬到块之上 */
+      body.${MAX_BODY_CLASS} .next-overlay-wrapper,
+      body.${MAX_BODY_CLASS} .next-portal,
+      body.${MAX_BODY_CLASS} .next-overlay-inner,
+      body.${MAX_BODY_CLASS} .next-overlay-backdrop { z-index: 100000 !important; }
       /* 日志永久不自动换行：纯 CSS 强制，无论 CodeMirror 处于什么模式、
          站点怎么重渲染都生效，脚本不需要任何动态维护（零开销） */
       .workload-details-log .CodeMirror pre.CodeMirror-line,
@@ -127,6 +136,7 @@
 
   function applyMax(block) {
     block.classList.add(MAX_CLASS);
+    document.body.classList.add(MAX_BODY_CLASS);
     maxed = true;
     ensureNoWrap(block);
     // CodeMirror 容器尺寸变了必须 refresh，否则内容区高度还是旧值
@@ -135,6 +145,7 @@
 
   function restoreMax(block) {
     block.classList.remove(MAX_CLASS);
+    document.body.classList.remove(MAX_BODY_CLASS);
     maxed = false;
     setTimeout(() => refreshCM(block), 60);
   }
@@ -256,7 +267,10 @@
     const block = visibleLogBlock();
     if (!block) {
       currentBlock = null;
-      if (maxed) maxed = false;      // 日志块整个没了（切页）：复位
+      if (maxed) {
+        maxed = false;                       // 日志块整个没了（切页）：复位
+        document.body.classList.remove(MAX_BODY_CLASS);
+      }
       return;
     }
     currentBlock = block;
