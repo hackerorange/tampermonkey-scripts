@@ -10,7 +10,7 @@
 | [glodon-console-fav-menus.user.js](./glodon-console-fav-menus.user.js) | 1.4.1 | `console.developer.glodon.com` | 左侧菜单末级项右侧加星星，标记常用菜单并以橙红色高亮；收藏按菜单名记录（与层级/顺序无关），记录持久化在本机 |
 | [glodon-console-version-switch.user.js](./glodon-console-version-switch.user.js) | 1.3.2 | `console.developer.glodon.com` | 应用详情页右侧「总览」改成快捷链接页：版本（release / release-pre）与常用功能（构建管理、版本发布）做成带图标的大方块，点版本直接切换：Vue 同步拦截确认弹窗（不闪现），总览重挂不闪旧页面，DOM 兜底自动点掉 |
 | [gstack-deploy-log-enhance.user.js](./gstack-deploy-log-enhance.user.js) | 1.5.0 | `gstack.glodon.com` | 部署详情页日志增强：「最大化」把日志（含 Pod 工具条）铺满视口盖住部署详情，Esc 还原，Pod/Container 下拉浮层保持可用；「清理」一键清空当前日志；日志保持站点默认自动换行（脚本不干预）；扫描走快路径，高频日志渲染下零额外开销 |
-| [pep-book-downloader.user.js](./pep-book-downloader.user.js) | 1.2.0 | `book.pep.com.cn` | 人教教材阅读器底部加「下载」按钮，抓取全部页面、去水印（顶部书法字 + 底部灰字 + 底部绿色署名）后打包 ZIP；插画铺满页脚的页面上，底部灰字按「跨页学位置 + 逐页反解半透明浓度」处理（仅供个人学习使用） |
+| [pep-book-downloader.user.js](./pep-book-downloader.user.js) | 1.3.0 | `book.pep.com.cn` | 人教教材阅读器底部加「下载」按钮，抓取全部页面、去水印（顶部书法字 + 底部灰字 + 底部绿色署名）后直接合成 PDF 下载（JPEG 原样嵌入，零画质损失、无外部依赖）；插画铺满页脚的页面上，底部灰字按「跨页学位置 + 逐页反解半透明浓度」处理（仅供个人学习使用） |
 
 各脚本的详细行为、配置项与边界条件见 [SPEC.md](./SPEC.md)。
 

@@ -1,11 +1,10 @@
 // ==UserScript==
 // @name         人教教材阅读器 · 下载助手
 // @namespace    pep-book-downloader
-// @version      1.2.0
-// @description  在人教教材在线阅读器底部工具栏加一个「下载」按钮，点击后弹窗显示进度，自动抓取全部页面、去水印并打包 ZIP 下载。仅供个人学习使用。
+// @version      1.3.0
+// @description  在人教教材在线阅读器底部工具栏加一个「下载」按钮，点击后弹窗显示进度，自动抓取全部页面、去水印并合成 PDF 下载。仅供个人学习使用。
 // @author       hackerorange
 // @match        https://book.pep.com.cn/*
-// @require      https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js
 // @grant        none
 // @run-at       document-idle
 // @homepageURL  https://github.com/hackerorange/tampermonkey-scripts
@@ -78,7 +77,7 @@
     const btn = document.createElement('div');
     btn.className = 'button';
     btn.id = 'pepDlBtn';
-    btn.title = '下载本书（去水印 · ZIP）';
+    btn.title = '下载本书（去水印 · PDF）';
     btn.style.cssText = `cursor: pointer; left: ${Math.max(0, leftPx - 34)}px; top: ${first.style.top || '7px'}; opacity: 1;`;
     // 与其他按钮完全同构：18x18 img 图标 + span 文字（icon-only 工具栏会自动隐藏 span）
     // 图标用橙色 #FF9F45，和灰色原生按钮区分开
@@ -288,11 +287,10 @@
       }
     }
 
-    const pageNos = [];
     const blobs = [];
     const missing = [];
     for (let i = 1; i <= totalPages; i++) {
-      if (cache[i]) { blobs.push(cache[i]); pageNos.push(i); } else missing.push(i);
+      if (cache[i]) blobs.push(cache[i]); else missing.push(i);
     }
     if (missing.length) log(`最终缺失页：${missing.join(', ')}`);
     if (!blobs.length) throw new Error('未获取到任何页面，请确认已通过滑块验证');
@@ -334,36 +332,111 @@
       }
     }
 
-    // 6. 打包 ZIP（阶段权重 90~99%）
-    setStage('打包 ZIP …');
-    const zip = new JSZip();
-    const pad = String(totalPages).length;
-    for (let i = 0; i < cleaned.length; i++) {
-      zip.file(String(pageNos[i]).padStart(pad, '0') + '.jpg', cleaned[i], { compression: 'STORE' });
-    }
-    const zipBlob = await zip.generateAsync(
-      { type: 'blob', compression: 'STORE' },
-      (meta) => { setProgress(90 + meta.percent * 0.09); }
-    );
+    // 6. 合成 PDF（阶段权重 90~99%）：每页 JPEG 原样嵌入（DCTDecode），不重编码、零画质损失
+    setStage('合成 PDF …');
+    const pdfBlob = await buildPdf(cleaned, (f) => setProgress(90 + f * 9));
 
     // 7. 保存
     const title = bookTitle.replace(/[\\/:*?"<>|]/g, '_');
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(zipBlob);
-    a.download = title + '.zip';
+    a.href = URL.createObjectURL(pdfBlob);
+    a.download = title + '.pdf';
     document.body.appendChild(a);
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 10000);
 
     setProgress(100);
     setStage('✅ 完成');
-    log(`ZIP 已开始下载：${blobs.length} 张图片，${(zipBlob.size / 1048576).toFixed(1)} MB`);
+    log(`PDF 已开始下载：${blobs.length} 页，${(pdfBlob.size / 1048576).toFixed(1)} MB`);
   }
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   // 计数器：主流程与 cleanOnePage 共用（cleanOnePage 定义在外层，需能访问）
   let passthrough = 0, reencoded = 0;
+
+  // ============================================================
+  // 三·五、JPEG → PDF（零依赖、零重编码）
+  // ============================================================
+  // 页面本身就是 JPEG，PDF 的 Image XObject 原生支持 DCTDecode —— 把 JPEG 字节流
+  // 原封不动放进 PDF 流里即可，浏览器不用再装 jsPDF/jszip 这类库，画质也无损。
+  // 手写的部分只有：解析 SOF 拿宽高/通道数 → 逐页写 Page 对象 → 拼出带 xref 的合法 PDF。
+
+  const PDF_PAGE_W = 595;          // PDF 页面宽度（pt，A4 = 595×842）
+
+  // 解析 JPEG 的 SOF 段：宽、高、通道数（1=灰度 3=RGB 4=CMYK）
+  function jpegSofInfo(u8) {
+    let i = 2;
+    while (i + 9 < u8.length) {
+      if (u8[i] !== 0xFF) { i++; continue; }
+      const m = u8[i + 1];
+      if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) {
+        return {
+          h: (u8[i + 5] << 8) | u8[i + 6],
+          w: (u8[i + 7] << 8) | u8[i + 8],
+          comp: u8[i + 9],
+        };
+      }
+      i += 2 + ((u8[i + 2] << 8) | u8[i + 3]);   // 跳过该段
+    }
+    throw new Error('JPEG 解析失败（找不到 SOF）');
+  }
+
+  // jpegs: Blob(image/jpeg) 数组；onProgress(0~1)
+  async function buildPdf(jpegs, onProgress) {
+    const enc = new TextEncoder();
+    const parts = [];            // (Uint8Array) 片段，最后合成 Blob
+    let off = 0;
+    const push = (s) => {
+      const b = typeof s === 'string' ? enc.encode(s) : s;
+      parts.push(b); off += b.length;
+    };
+    const offsets = [];          // 对象号 → 文件内偏移（1 起）
+    const setObj = (n) => { offsets[n] = off; };
+
+    // 头部（含二进制注释字节，TextEncoder 不方便编码非 ASCII，直接给字节）
+    push(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2D, 0x31, 0x2E, 0x34, 0x0A, 0x25, 0xE2, 0xE3, 0xCF, 0xD3, 0x0A]));
+
+    const n = jpegs.length;
+    // 对象布局：1=Catalog，2=Pages，之后每页 3 个对象（Page / 内容流 / Image XObject）
+    setObj(1); push('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+    const kids = [];
+    for (let i = 0; i < n; i++) kids.push((3 + i * 3) + ' 0 R');
+    setObj(2); push('2 0 obj\n<< /Type /Pages /Kids [' + kids.join(' ') + '] /Count ' + n + ' >>\nendobj\n');
+
+    for (let i = 0; i < n; i++) {
+      const buf = new Uint8Array(await jpegs[i].arrayBuffer());
+      const info = jpegSofInfo(buf);
+      // 页面尺寸统一成 A4 宽（595pt），高度按原图比例 —— 教材版面比例本就接近 A4（0.707），
+      // 打印出来正好是 A4 一页，阅读器里也不会出现「超大页面」需要手动缩放。
+      const pw = PDF_PAGE_W;
+      const ph = Math.round(pw * info.h / info.w);
+      const pageObj = 3 + i * 3, contObj = pageObj + 1, imgObj = pageObj + 2;
+      setObj(pageObj);
+      push(pageObj + ' 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + pw + ' ' + ph + ']' +
+        ' /Resources << /XObject << /Im0 ' + imgObj + ' 0 R >> >> /Contents ' + contObj + ' 0 R >>\nendobj\n');
+      const content = 'q ' + pw + ' 0 0 ' + ph + ' 0 0 cm /Im0 Do Q';
+      setObj(contObj);
+      push(contObj + ' 0 obj\n<< /Length ' + content.length + ' >>\nstream\n' + content + '\nendstream\nendobj\n');
+      const cs = info.comp === 1 ? '/DeviceGray' : (info.comp === 4 ? '/DeviceCMYK' : '/DeviceRGB');
+      const dec = info.comp === 4 ? ' /Decode [1 0 1 0 1 0 1 0]' : '';   // Adobe CMYK JPEG 通道序相反
+      setObj(imgObj);
+      push(imgObj + ' 0 obj\n<< /Type /XObject /Subtype /Image /Width ' + info.w + ' /Height ' + info.h +
+        ' /ColorSpace ' + cs + ' /BitsPerComponent 8 /Filter /DCTDecode' + dec + ' /Length ' + buf.length + ' >>\nstream\n');
+      push(buf);
+      push('\nendstream\nendobj\n');
+      if (onProgress && (i % 4 === 0 || i + 1 === n)) onProgress((i + 1) / n);
+      if (i % 8 === 7) await new Promise(r => setTimeout(r, 0));   // 大书时让出主线程，避免 UI 卡顿
+    }
+
+    const xrefOff = off;
+    const cnt = 2 + n * 3;                       // 1 Catalog + 1 Pages + 每页 3 个对象
+    let xref = 'xref\n0 ' + (cnt + 1) + '\n0000000000 65535 f \n';
+    for (let o = 1; o <= cnt; o++) xref += String(offsets[o]).padStart(10, '0') + ' 00000 n \n';
+    push(xref);
+    push('trailer\n<< /Size ' + (cnt + 1) + ' /Root 1 0 R >>\nstartxref\n' + xrefOff + '\n%%EOF');
+    return new Blob(parts, { type: 'application/pdf' });
+  }
 
   // ============================================================
   // 四、去水印（与导出脚本同款：顶部按列重建 + 底部主色填充）
