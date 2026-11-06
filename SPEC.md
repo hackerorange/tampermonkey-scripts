@@ -227,7 +227,7 @@ DOMContentLoaded（readyState=loading 时）┘
 - **调试**：控制台执行 `__gldStarDebug()` 打印每个菜单项的「菜单名 / 收藏键 / 是否已收藏 / 星标中心 / 箭头中心 / 差值 / 定位方式」，便于核对
 - **已知限制**：只看菜单名，所以**不同父级下的同名菜单会被视为同一项**（一起点亮）；菜单改名等于新菜单（旧名字的记录保留但不再匹配）；不做跨浏览器/跨设备同步；若某级菜单标题里没有箭头类图标，会退回固定留白
 
-## 3. `glodon-console-version-switch.user.js`（v1.3.1）
+## 3. `glodon-console-version-switch.user.js`（v1.3.2）
 
 **作用**：把开发者控制台应用详情页右侧「总览」改造成一个**快捷链接页**——页面上只剩两组带图标的大方块：`版本`（release / release-pre）与 `常用功能`（构建管理、版本发布）。点版本方块会自动在左侧版本下拉里切换、自动确认页面弹窗并直接跳转；点常用功能方块等于点左侧对应菜单。
 
@@ -250,6 +250,7 @@ DOMContentLoaded（readyState=loading 时）┘
 - **常用功能跳转**：`openMenu()` 按文字找 `li[role="menuitem"] / .el-menu-item / a` 并派发点击（走站点自身的页签导航）；只有找不到该菜单时才把当前 URL 的 pathname 换成配置里的兜底地址（保留 query），避免在正常点击后再强行刷新
 - **状态刷新**：每次扫描把当前版本对应的方块加 `is-current` + 右上角「当前」角标；方块组被微应用重绘掉时，下一次扫描（MutationObserver 200ms 节流）自动补回，不会重复注入
 - **已知限制**：版本名匹配规则较严（不做模糊匹配）；若页面在开发模式下禁用了切换（Vue 层忽略点击），脚本无法绕过；站点升级改了 qiankun 包装 id / 菜单结构 / `el-message-box` 结构时需同步改选择器；总览页原有内容被隐藏属于**结构性改动**，站点改版后需要复核
+- **v1.3.2 变更（切换不再看见下拉）**：自动交互期间给 `body` 加 `gld-dd-suppress` 类，CSS 把版本下拉压成 `visibility:hidden`——hover 派发照旧让站点渲染列表，但用户看不见；结束后派发 `mouseleave` 让下拉自动收起，并延迟 500ms 再解除隐藏（避开 element-ui 约 300ms 的收起延时）。另外 `switchTo` 每次现取侧栏 panel（不再信任方块闭包里的旧引用）：站点重绘后旧元素上的版本号还是切换前的名字，会让「已是当前版本」短路失效，点当前版本方块也误切一遍
 
 ## 4. `pep-book-downloader.user.js`（v1.0.2）
 
@@ -261,3 +262,16 @@ DOMContentLoaded（readyState=loading 时）┘
 - **去水印**：顶部按列重建背景色（只修比背景「深」的像素，保护白色正文）、底部按主色占比 ≥95% 整带填充（深色正文 2px 膨胀保护）
 - **断点续传**：已抓页面缓存在内存数组中，不刷新页面可继续
 - **已知限制**：遇 WAF 滑块验证时暂停并提示，需人工过验证后重新点击；接口或目录结构变更可能失效；翻页图片尺寸过小/过大时去水印判定阈值需微调（`TOP_BOX` / `BOTTOM_H` / `STRONG_FRAC`）
+
+## 5. `gstack-deploy-log-enhance.user.js`（v1.2.0）
+
+**作用**：GStack 部署详情页（`#/workspace/**/deploy/details`）日志区增强——日志工具条「刷新」左侧注入三个控件，顺序 `[最大化][清理][自动刷新组][刷新]`，按钮复用站点 Fusion Next 类名（`next-btn next-medium next-btn-normal`）融入原生 UI。
+
+- **站点**：`https://gstack.glodon.com/*`
+- **识别锚点**：日志块 `.workload-details-log`（内含 Pod 工具条 `.header` 与 `react-codemirror2` 的 CodeMirror）；「刷新」按钮按块内可见 button 文本精确匹配；CodeMirror 实例挂在其 wrapper 元素的 `.CodeMirror` 属性上
+- **最大化**：块加 `gstack-log-maxed` 类 → `position:fixed` 铺满视口（z-index 99999）、盖住部署详情；内部 flex 链撑开 `next-loading → .next-loading-wrap → react-codemirror2`，`.CodeMirror{height:100%!important}` 覆盖内联 100vh；容器尺寸变化后 `cm.refresh()`。再点一次或按 **Esc** 还原
+- **清理**：点击走 CodeMirror API `setValue('')`——change 事件让 react-codemirror2 把空串同步回 React state，站点重渲染不会带回旧日志（直接改 DOM 会被恢复）；拿不到实例时清空 `.CodeMirror-code` 兜底；清后 `cm.refresh()`
+- **自动刷新**：开关按钮（开=primary 样式）+ 间隔下拉（1/2/3/5/10s，默认 3s，localStorage `gstack-log-auto-sec` 记忆）；tick 自动点站点「刷新」；用 `getScrollInfo()` 判断日志是否停在底部（距底 ≤40px），是则刷新后 `scrollTo` 底部（tail -f 跟随），用户往上翻了不跟随；`document.hidden` 时跳过；离开日志页自动停（`setAuto(false)`）
+- **不换行**：`cm.setOption('lineWrapping', false)`；拿不到实例时给 wrapper 加 `gstack-nowrap-fallback` 类走 CSS 兜底（`pre.CodeMirror-line { white-space: pre !important }`）
+- **稳定性（核心约束）**：`scan()` 由 MutationObserver（150ms 节流）+ 1s 兜底轮询驱动，**只在控件缺失/错位时才写 DOM**——同值重设 `textContent` 也会触发 childList 突变，会被 Observer 捕获形成无限扫描循环导致页面假死（v1.1.0 踩过）；按钮监听 `_gstackBound` 只绑一次，点击时现取可见块避免闭包过期；React 重绘整块替换 DOM 后扫描自动补回控件、恢复最大化状态
+- **已知限制**：站点升级改了 `.workload-details-log` 结构、按钮文案或 react-codemirror2 引入方式时需同步选择器；清理只清视图层，站点重新拉取日志后会重新渲染
