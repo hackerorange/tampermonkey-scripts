@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GStack 部署日志增强
 // @namespace    zhongct.gstack.deploy.log.maximize
-// @version      1.5.0
-// @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「清理」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情，Esc 或再点一次还原，Pod/Container 下拉浮层保持可用；清理一键清空当前日志内容；日志保持站点默认的自动换行。
+// @version      1.6.0
+// @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「清理」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情，并去掉 CodeMirror-wrap 取消自动换行（长行横向滚动），Esc 或再点一次还原（恢复站点默认自动换行），Pod/Container 下拉浮层保持可用；清理一键清空当前日志内容。
 // @author       zhongct
 // @match        https://gstack.glodon.com/*
 // @grant        none
@@ -92,11 +92,52 @@
     const wrapper = block.querySelector('.CodeMirror');
     return wrapper && wrapper.CodeMirror ? wrapper.CodeMirror : null;
   }
-  // 注：换行行为完全交给站点默认配置，脚本不再干预（v1.5.0 起）
 
   function refreshCM(block) {
     const cm = cmOf(block);
     if (cm) { try { cm.refresh(); } catch (e) { /* ignore */ } }
+  }
+
+  // ---------- 换行：只在最大化期间取消 ----------
+  // CodeMirror 5 的换行完全由 wrapper 上的 .CodeMirror-wrap 这个类控制：
+  // 基样式 pre.CodeMirror-line{white-space:pre;word-wrap:normal} 不折行，
+  // .CodeMirror-wrap 里才改成 pre-wrap。所以摘掉类 = 长行横向滚动。
+  // 摘/加类都改变了行宽与滚动区尺寸，必须 refresh 让 CM 重新测量，
+  // 否则滚动条/选区坐标会错位；refresh 较贵，用定时器合并成一次
+  const CM_WRAP_CLASS = 'CodeMirror-wrap';
+  // 记录「被本脚本摘掉类的节点」，还原时只给这些补回（站点若本就没开
+  // 换行，不会被我强行加回来）；WeakSet 不拦 GC，节点被 React 换新即失效
+  const strippedWrap = new WeakSet();
+  let refreshTimer = null;
+
+  function scheduleRefresh(block) {
+    if (refreshTimer) return;
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null;
+      refreshCM(block);
+    }, 60);
+  }
+
+  function stripWrap(block) {
+    let hit = false;
+    block.querySelectorAll('.' + CM_WRAP_CLASS).forEach((n) => {
+      n.classList.remove(CM_WRAP_CLASS);
+      strippedWrap.add(n);
+      hit = true;
+    });
+    if (hit) scheduleRefresh(block);
+    return hit;
+  }
+
+  function restoreWrap(block) {
+    let hit = false;
+    block.querySelectorAll('.CodeMirror').forEach((n) => {
+      if (strippedWrap.has(n)) {
+        n.classList.add(CM_WRAP_CLASS);
+        hit = true;
+      }
+    });
+    if (hit) scheduleRefresh(block);
   }
 
   // ---------- 清理日志 ----------
@@ -121,15 +162,20 @@
     block.classList.add(MAX_CLASS);
     document.body.classList.add(MAX_BODY_CLASS);
     maxed = true;
-    // CodeMirror 容器尺寸变了必须 refresh，否则内容区高度还是旧值
-    setTimeout(() => refreshCM(block), 60);
+    // 最大化同时取消自动换行（长行横向滚动）
+    stripWrap(block);
+    // CodeMirror 容器尺寸 + 换行状态都变了，必须 refresh，
+    // 否则内容区高度/滚动宽度还是旧值
+    scheduleRefresh(block);
   }
 
   function restoreMax(block) {
     block.classList.remove(MAX_CLASS);
     document.body.classList.remove(MAX_BODY_CLASS);
     maxed = false;
-    setTimeout(() => refreshCM(block), 60);
+    // 还原 = 回到站点默认的自动换行
+    restoreWrap(block);
+    scheduleRefresh(block);
   }
 
   function toggleMax(block) {
@@ -242,6 +288,13 @@
         b.querySelector('#' + BTN_ID) &&
         b.querySelector('#' + CLEAR_BTN_ID) &&
         (!maxed || b.classList.contains(MAX_CLASS))) {
+      // 最大化期间站点重渲染（刷新/切页签会重新 setOption）可能把
+      // CodeMirror-wrap 加回来 → 补摘一次。只读 querySelector + 可能的
+      // 一次类写入，不读布局，高频日志下开销可忽略
+      if (maxed) {
+        const wrapNode = b.querySelector('.' + CM_WRAP_CLASS);
+        if (wrapNode) stripWrap(b);
+      }
       return;
     }
     const block = visibleLogBlock();
