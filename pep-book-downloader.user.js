@@ -362,6 +362,12 @@
   // 原封不动放进 PDF 流里即可，浏览器不用再装 jsPDF/jszip 这类库，画质也无损。
   // 手写的部分只有：解析 SOF 拿宽高/通道数 → 逐页写 Page 对象 → 拼出带 xref 的合法 PDF。
 
+  // 页面按 300dpi 排版：PDF 用户单位是 1/72 英寸，所以 1 像素对应的物理长度
+  // = (1/300) 英寸 = 72/300 pt = 0.24 pt。例：1273×1800 px → 305.52×432 pt（4.24×6.0 英寸）。
+  const PDF_DPI = 300;
+  const PX2PT = 72 / PDF_DPI;                 // 0.24
+  const px2pt = (px) => Math.round(px * PX2PT * 100) / 100;
+
   // 解析 JPEG 的 SOF 段：宽、高、通道数（1=灰度 3=RGB 4=CMYK）
   function jpegSofInfo(u8) {
     let i = 2;
@@ -405,8 +411,9 @@
     for (let i = 0; i < n; i++) {
       const buf = new Uint8Array(await jpegs[i].arrayBuffer());
       const info = jpegSofInfo(buf);
-      // 页面尺寸 = 图片尺寸（1px = 1pt）：和原图一一对应，不缩放不失真
-      const pw = info.w, ph = info.h;
+      // 页面尺寸按 300dpi 换算：像素 ÷ 300 × 72 = pt。图片仍按原始像素绘制（不重采样），
+      // 只是页面在物理尺度上等价于「这张图以 300dpi 打印」。
+      const pw = px2pt(info.w), ph = px2pt(info.h);
       const pageObj = 3 + i * 3, contObj = pageObj + 1, imgObj = pageObj + 2;
       setObj(pageObj);
       push(pageObj + ' 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + pw + ' ' + ph + ']' +
