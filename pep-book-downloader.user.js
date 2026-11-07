@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         人教教材阅读器 · 下载助手
 // @namespace    pep-book-downloader
-// @version      1.3.0
+// @version      1.3.1
 // @description  在人教教材在线阅读器底部工具栏加一个「下载」按钮，点击后弹窗显示进度，自动抓取全部页面、去水印并合成 PDF 下载。仅供个人学习使用。
 // @author       hackerorange
 // @match        https://book.pep.com.cn/*
@@ -16,6 +16,8 @@
 
 (function () {
   'use strict';
+
+  const SCRIPT_VER = '1.3.1';   // 与 @version 同步：日志里打出来，方便确认不是旧脚本
 
   // ===== 去水印配置（与导出脚本同款最终算法）=====
   const TOP_BOX = { y0: 0.0028, y1: 0.0367, x0: 0.33, x1: 0.70 };
@@ -179,6 +181,7 @@
     ui.msg.textContent = '';
     setProgress(0);
     setStage('读取书籍信息 …');
+    log(`脚本 v${SCRIPT_VER}（PDF 页面 ${PDF_DPI}dpi）`);
 
     // 1. 书 ID 与 config
     const m = location.pathname.match(/^\/(\d+)/);
@@ -347,7 +350,7 @@
 
     setProgress(100);
     setStage('✅ 完成');
-    log(`PDF 已开始下载：${blobs.length} 页，${(pdfBlob.size / 1048576).toFixed(1)} MB`);
+    log(`PDF 已开始下载：${blobs.length} 页，${(pdfBlob.size / 1048576).toFixed(1)} MB，页面 ${pdfPageInfo}`);
   }
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -367,6 +370,7 @@
   const PDF_DPI = 300;
   const PX2PT = 72 / PDF_DPI;                 // 0.24
   const px2pt = (px) => Math.round(px * PX2PT * 100) / 100;
+  let pdfPageInfo = '';                       // 首页页面尺寸，下载完成后写进日志
 
   // 解析 JPEG 的 SOF 段：宽、高、通道数（1=灰度 3=RGB 4=CMYK）
   function jpegSofInfo(u8) {
@@ -414,6 +418,7 @@
       // 页面尺寸按 300dpi 换算：像素 ÷ 300 × 72 = pt。图片仍按原始像素绘制（不重采样），
       // 只是页面在物理尺度上等价于「这张图以 300dpi 打印」。
       const pw = px2pt(info.w), ph = px2pt(info.h);
+      if (!i) pdfPageInfo = `${pw}×${ph} pt（${info.w}×${info.h} px @${PDF_DPI}dpi）`;
       const pageObj = 3 + i * 3, contObj = pageObj + 1, imgObj = pageObj + 2;
       setObj(pageObj);
       push(pageObj + ' 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + pw + ' ' + ph + ']' +
