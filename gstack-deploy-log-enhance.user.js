@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GStack 部署日志增强
 // @namespace    zhongct.gstack.deploy.log.maximize
-// @version      1.6.0
-// @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「清理」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情，并去掉 CodeMirror-wrap 取消自动换行（长行横向滚动），Esc 或再点一次还原（恢复站点默认自动换行），Pod/Container 下拉浮层保持可用；清理一键清空当前日志内容。
+// @version      1.7.0
+// @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「到底」「清理」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情，并去掉 CodeMirror-wrap 取消自动换行（长行横向滚动），Esc 或再点一次还原（恢复站点默认自动换行）；「到底」滚动到日志末尾；清理一键清空当前日志内容。
 // @author       zhongct
 // @match        https://gstack.glodon.com/*
 // @grant        none
@@ -24,6 +24,7 @@
   const MAX_BODY_CLASS = 'gstack-log-maxed-body';
   const BTN_ID = 'gstack-log-max-btn';
   const CLEAR_BTN_ID = 'gstack-log-clear-btn';
+  const SCROLL_BTN_ID = 'gstack-log-end-btn';
   // v1.2.0 的「自动刷新」控件 id：升级后页面上可能残留，扫描时清掉
   const STALE_IDS = ['gstack-log-auto-wrap', 'gstack-log-auto-btn', 'gstack-log-auto-interval'];
 
@@ -155,6 +156,21 @@
     console.log(LOG, '已清空当前日志');
   }
 
+  // ---------- 滚动到日志末尾 ----------
+  // 优先走 CM API：scrollTo 的 y 会被 calculateScrollPos 钳制到最大滚动位，
+  // 传一个足够大的值即可到底；拿不到实例时滚 .CodeMirror-scroll 兜底
+  function scrollToEnd(block) {
+    const cm = cmOf(block);
+    if (cm) {
+      try {
+        cm.scrollTo(null, cm.getScrollInfo().height);
+        return;
+      } catch (e) { /* 落到 DOM 兜底 */ }
+    }
+    const scroller = block.querySelector('.CodeMirror-scroll');
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  }
+
   // ---------- 最大化 / 还原 ----------
   let maxed = false;
 
@@ -194,7 +210,7 @@
       block.classList.contains(MAX_CLASS) ? '还原' : '最大化');
   }
 
-  // ---------- 注入按钮：插在「刷新」左边，顺序 [最大化][清理][刷新] ----------
+  // ---------- 注入按钮：插在「刷新」左边，顺序 [最大化][到底][清理][刷新] ----------
   function makeButton() {
     // 复用站点 Fusion Next 按钮的类名，外观与「下载」一致
     const btn = document.createElement('button');
@@ -203,6 +219,17 @@
     btn.className = 'next-btn next-medium next-btn-normal';
     btn.style.marginRight = '8px';
     btn.innerHTML = '<span class="next-btn-helper">最大化</span>';
+    return btn;
+  }
+
+  function makeEndButton() {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = SCROLL_BTN_ID;
+    btn.className = 'next-btn next-medium next-btn-normal';
+    btn.title = '滚动到日志末尾';
+    btn.style.marginRight = '8px';
+    btn.innerHTML = '<span class="next-btn-helper">到底</span>';
     return btn;
   }
 
@@ -221,7 +248,7 @@
     const refreshBtn = findRefreshBtn(block);
     if (!refreshBtn) return;
 
-    // 目标顺序 [最大化][清理][刷新]。
+    // 目标顺序 [最大化][到底][清理][刷新]。
     // 注意：只在缺失/错位时才动 DOM——每轮扫描哪怕无意义地重排一次，
     // 都会被 MutationObserver 捕获形成 无限扫描循环（页面假死）
     const parent = refreshBtn.parentNode;
@@ -231,17 +258,25 @@
       if (stale) stale.remove();
     }
     let maxBtn = block.querySelector('#' + BTN_ID);
+    let endBtn = block.querySelector('#' + SCROLL_BTN_ID);
     let clearBtn = block.querySelector('#' + CLEAR_BTN_ID);
+    if (!endBtn) {
+      endBtn = makeEndButton();
+      parent.insertBefore(endBtn, refreshBtn);
+    }
     if (!clearBtn) {
       clearBtn = makeClearButton();
       parent.insertBefore(clearBtn, refreshBtn);
     }
     if (!maxBtn) {
       maxBtn = makeButton();
-      parent.insertBefore(maxBtn, clearBtn);
+      parent.insertBefore(maxBtn, endBtn);
     }
-    if (maxBtn.nextElementSibling !== clearBtn || clearBtn.nextElementSibling !== refreshBtn) {
-      parent.insertBefore(maxBtn, clearBtn);
+    if (maxBtn.nextElementSibling !== endBtn ||
+        endBtn.nextElementSibling !== clearBtn ||
+        clearBtn.nextElementSibling !== refreshBtn) {
+      parent.insertBefore(maxBtn, endBtn);
+      parent.insertBefore(endBtn, clearBtn);
       parent.insertBefore(clearBtn, refreshBtn);
     }
     // 只绑定一次（scan 会被 MutationObserver 频繁调用，重复绑定会叠加）；
@@ -258,6 +293,13 @@
       clearBtn.addEventListener('click', () => {
         const b = visibleLogBlock();
         if (b) clearLog(b);
+      });
+    }
+    if (!endBtn._gstackBound) {
+      endBtn._gstackBound = true;
+      endBtn.addEventListener('click', () => {
+        const b = visibleLogBlock();
+        if (b) scrollToEnd(b);
       });
     }
     updateBtnText(block);
@@ -286,6 +328,7 @@
     const b = currentBlock;
     if (b && b.isConnected && decorated.has(b) &&
         b.querySelector('#' + BTN_ID) &&
+        b.querySelector('#' + SCROLL_BTN_ID) &&
         b.querySelector('#' + CLEAR_BTN_ID) &&
         (!maxed || b.classList.contains(MAX_CLASS))) {
       // 最大化期间站点重渲染（刷新/切页签会重新 setOption）可能把
