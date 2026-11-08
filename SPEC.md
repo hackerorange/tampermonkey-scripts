@@ -272,15 +272,20 @@ DOMContentLoaded（readyState=loading 时）┘
 - **断点续传**：已抓页面缓存在内存数组中，不刷新页面可继续
 - **已知限制**：遇 WAF 滑块验证时暂停并提示，需人工过验证后重新点击；接口或目录结构变更可能失效；翻页图片尺寸过小/过大时去水印判定阈值需微调（`TOP_BOX` / `BOTTOM_H` / `STRONG_FRAC`）；整幅彩色插画（如幕布/照片铺满页脚）页面上，绿色像素可全部清除，但笔画处可能留下淡淡的暗色纹理痕迹；底部灰字是「尽力而为」——大部分页面淡到看不清，个别页（如牛皮纸底）仍会留淡淡残影，且插画里与灰字浓度相当、又是短横段的细节可能被一起提亮（已用 `dev` 区间和短段长度约束把误伤压到很低）
 
-## 5. `gstack-deploy-log-enhance.user.js`（v1.7.0）
+## 5. `gstack-deploy-log-enhance.user.js`（v1.8.0）
 
-**作用**：GStack 部署详情页（`#/workspace/**/deploy/details`）日志区增强——日志工具条「刷新」左侧注入三个按钮，顺序 `[最大化][到底][清理][刷新]`，按钮复用站点 Fusion Next 类名（`next-btn next-medium next-btn-normal`）融入原生 UI。
+**作用**：GStack 部署详情页（`#/workspace/**/deploy/details`）日志区增强——日志工具条「刷新」左侧注入三个按钮 + 一个「自动到底」复选框，顺序 `[最大化][到底][清理][☐自动到底][刷新]`，按钮复用站点 Fusion Next 类名（`next-btn next-medium next-btn-normal`）融入原生 UI。
 
 - **站点**：`https://gstack.glodon.com/*`
 - **识别锚点**：日志块 `.workload-details-log`（内含 Pod 工具条 `.header` 与 `react-codemirror2` 的 CodeMirror）；「刷新」按钮按块内可见 button 文本精确匹配；CodeMirror 实例挂在其 wrapper 元素的 `.CodeMirror` 属性上
 - **最大化**：块加 `gstack-log-maxed` 类 → `position:fixed` 铺满视口（z-index 99999）、盖住部署详情；内部 flex 链撑开 `next-loading → .next-loading-wrap → react-codemirror2`，`.CodeMirror{height:100%!important}` 覆盖内联 100vh；容器尺寸变化后 `cm.refresh()`。再点一次或按 **Esc** 还原
 - **清理**：点击走 CodeMirror API `setValue('')`——change 事件让 react-codemirror2 把空串同步回 React state，站点重渲染不会带回旧日志（直接改 DOM 会被恢复）；拿不到实例时清空 `.CodeMirror-code` 兜底；清后 `cm.refresh()`
 - **到底（v1.7.0 起）**：滚动到日志末尾——优先 `cm.scrollTo(null, cm.getScrollInfo().height)`（y 会被 CM 的 `calculateScrollPos` 钳到最大滚动位，传大值即可到底），拿不到实例时直接滚 `.CodeMirror-scroll`（`scrollTop = scrollHeight`）兜底；最大化状态下同样可用
+- **自动到底（v1.8.0 起）**：紧挨「刷新」左侧的复选框，**默认勾选**，状态存站点域 `localStorage['gstack_log_auto_end']`（`'1'` 勾选 / `'0'` 取消；`@grant none` 下拿不到 `GM_setValue`）。**只在「一轮日志数据刷新完成」时滚一次到末尾**，不做逐帧跟随
+  - **刷新完成的判定**：CodeMirror 的 `change` 事件 = 一次数据写入；连续写入（流式追加、先清空再写入、多次 setState、一次轮询里多批）用 `REFRESH_SETTLE_MS = 300` 的 debounce 合并成一轮，静默 300ms 后才调 `scrollToEnd()`。日志渲染过程中不会反复拉滚动条
+  - **覆盖的刷新来源**：点「刷新」、站点自动轮询、切 Pod/Container、首屏加载、React 重建 CodeMirror 实例（新实例已带全量日志、不会再为这批内容派发 change，`bindFollow()` 首次挂钩时主动补一轮）、整块重绘但拿不到 CM 实例（`scan()` 里 `!cmOf(block)` 的兜底）
+  - **复选框交互**：勾选时立即滚一次到末尾（即时生效）；取消勾选时 `cancelFollow()` 清掉排队中未执行的滚动，已渲染内容不变；勾选态文字高亮蓝色（`.is-checked`），React 重绘换掉 checkbox 节点时由 `syncAutoCb()` 对齐回内存状态，标签与原生 `<input type=checkbox>` 用 CSS 撑到与 medium 按钮等高（28px）
+  - **挂钩幂等**：`WeakSet` 记录已挂 `change` 的 CM 实例；`scan()` 快路径每轮只做一次 `querySelector('.CodeMirror')` + WeakSet 判断，不写 DOM、不读布局，日志高频渲染下零额外开销
 - **换行（v1.6.0 起）**：只在**最大化期间**取消自动换行。做法是把块内带 `CodeMirror-wrap` 类的节点（即 `.CodeMirror` wrapper，等价 CSS 选择器 `.workload-details-log .CodeMirror-wrap`）的该类摘掉——CodeMirror 5 的折行完全由这个类上的 CSS 决定（基样式 `pre.CodeMirror-line{white-space:pre;word-wrap:normal}`，`.CodeMirror-wrap` 里才改成 `pre-wrap`），摘类即长行横向滚动，且**不动 CM 的 `lineWrapping` option**，不与站点渲染节奏抢配置。摘/加类都会改行宽与滚动区尺寸 → 必须 `cm.refresh()` 重测量（用 60ms 定时器把连续操作合并成一次 `refresh`）。还原时只给「被脚本摘过类」的节点补回（`WeakSet` 记录）——站点本就没开换行时不会被强行加上
 - **v1.3.0 变更**：**移除 v1.2.0 的「自动刷新」功能**（开关按钮 + 间隔下拉，实测有 bug），扫描时会顺带清掉旧版残留的 `#gstack-log-auto-wrap` / `#gstack-log-auto-btn` / `#gstack-log-auto-interval` 控件
 - **v1.3.1 变更（卡顿修复）**：日志高频流式渲染时，原先每次扫描都走 `visibleLogBlock()`（对所有块 `getBoundingClientRect` → 强制同步布局）+ `decorate`（多次 `querySelectorAll`），120～150ms 一次插在 CodeMirror 渲染管线里造成卡顿。现在 `scan()` 先走**快路径**：上次记录的块 `isConnected`、`decorated`（WeakSet）已标记、两个按钮都在、最大化状态一致时直接 return——全程只查 `isConnected` / `querySelector`，**零 DOM 写入、零布局读取**；只有块被 React 替换（`isConnected=false`）或控件缺失时才走完整装饰
@@ -291,5 +296,6 @@ DOMContentLoaded（readyState=loading 时）┘
 - **v1.5.0 变更（恢复自动换行）**：移除 v1.4.0 的纯 CSS 不换行规则（`white-space: pre !important` / `overflow-x`）与一次性 `setOption(false)`、摘 `CodeMirror-wrap` 类的逻辑——用户确认需要站点默认的自动折行。测试新增「换行零干预」场景：2 秒观察期内脚本零 `setOption` 调用、零 wrap 类改动
 - **v1.6.0 变更（最大化时不换行）**：常规视图回到站点默认折行，只有点「最大化」时摘 `CodeMirror-wrap`、长行改横向滚动，还原/Esc 时补回类。快路径里在 `maxed` 状态下只读一次 `querySelector('.CodeMirror-wrap')`（不读布局），站点点「刷新」/重渲染把类加回来时补摘一次并合并 `refresh`——避免 v1.3.x「150ms 轮询 + `setOption`」与站点互抢导致的卡顿
 - **v1.7.0 变更（到底按钮）**：工具条新增「到底」按钮，点击滚动到日志末尾；注入顺序改为 `[最大化][到底][清理][刷新]`，快路径补查 `#gstack-log-end-btn`
-- **稳定性（核心约束）**：`scan()` 由 MutationObserver（150ms 节流）+ 1s 兜底轮询驱动，**只在控件缺失/错位时才写 DOM**——同值重设 `textContent` 也会触发 childList 突变，会被 Observer 捕获形成无限扫描循环导致页面假死（v1.1.0 踩过）；按钮监听 `_gstackBound` 只绑一次，点击时现取可见块避免闭包过期；React 重绘整块替换 DOM 后扫描自动补回控件、恢复最大化状态
-- **已知限制**：站点升级改了 `.workload-details-log` 结构、按钮文案或 react-codemirror2 引入方式时需同步选择器；清理只清视图层，站点重新拉取日志后会重新渲染
+- **v1.8.0 变更（自动到底复选框）**：工具条新增复选框，注入顺序改为 `[最大化][到底][清理][☐自动到底][刷新]`，快路径补查 `#gstack-log-auto-end-wrap`（否则从旧版热升级、页面未整刷时不会注入新控件）；勾选后以 CM `change` + 300ms debounce 判定「刷新完数据」，每轮只滚一次到末尾；状态记忆在 `localStorage`。未采用「日志每帧变化就跟随」或「用户上滚自动暂停」——需求明确是「选中后，刷新完数据滚动到底部」，行为保持可预测
+- **稳定性（核心约束）**：`scan()` 由 MutationObserver（150ms 节流）+ 1s 兜底轮询驱动，**只在控件缺失/错位时才写 DOM**——同值重设 `textContent` 也会触发 childList 突变，会被 Observer 捕获形成无限扫描循环导致页面假死（v1.1.0 踩过）；按钮监听 `_gstackBound` 只绑一次，点击时现取可见块避免闭包过期；React 重绘整块替换 DOM 后扫描自动补回控件、恢复最大化状态；`scheduleFollow()` 的滚动回调里也现取可见块，不持有过期节点
+- **已知限制**：站点升级改了 `.workload-details-log` 结构、按钮文案或 react-codemirror2 引入方式时需同步选择器；清理只清视图层，站点重新拉取日志后会重新渲染；勾选期间每轮数据刷新都会回到底部（**向上翻看历史请先取消勾选**）；「刷新完成」依赖 CodeMirror 的 `change` 事件，若站点改为完全绕过 CM API 直接写 DOM，只剩 `scan()` 的整块重绘兜底；`localStorage` 按站点域持久化，隐私模式 / 禁用存储时退化为每次默认勾选

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GStack 部署日志增强
 // @namespace    zhongct.gstack.deploy.log.maximize
-// @version      1.7.0
-// @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「到底」「清理」——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情，并去掉 CodeMirror-wrap 取消自动换行（长行横向滚动），Esc 或再点一次还原（恢复站点默认自动换行）；「到底」滚动到日志末尾；清理一键清空当前日志内容。
+// @version      1.8.0
+// @description  gstack.glodon.com 部署详情页：日志工具条「刷新」左侧加「最大化」「到底」「清理」和一个「自动到底」复选框——最大化把日志（含 Pod 工具条）铺满视口、盖住部署详情，并去掉 CodeMirror-wrap 取消自动换行（长行横向滚动），Esc 或再点一次还原（恢复站点默认自动换行）；「到底」滚动到日志末尾；勾选「自动到底」后，每次日志数据刷新完成（写入静默 300ms）自动滚动到末尾一次，状态记忆在本机；「清理」一键清空当前日志内容。
 // @author       zhongct
 // @match        https://gstack.glodon.com/*
 // @grant        none
@@ -25,6 +25,12 @@
   const BTN_ID = 'gstack-log-max-btn';
   const CLEAR_BTN_ID = 'gstack-log-clear-btn';
   const SCROLL_BTN_ID = 'gstack-log-end-btn';
+  // 「自动到底」复选框（v1.8.0）：勾选后每轮刷新数据写入完成时滚到末尾一次
+  const AUTO_WRAP_ID = 'gstack-log-auto-end-wrap';
+  const AUTO_CB_ID = 'gstack-log-auto-end-cb';
+  const AUTO_STORAGE_KEY = 'gstack_log_auto_end';
+  // 连续写入静默这么久，判定为「这一轮刷新完数据了」→ 只滚一次
+  const REFRESH_SETTLE_MS = 300;
   // v1.2.0 的「自动刷新」控件 id：升级后页面上可能残留，扫描时清掉
   const STALE_IDS = ['gstack-log-auto-wrap', 'gstack-log-auto-btn', 'gstack-log-auto-interval'];
 
@@ -53,6 +59,17 @@
       body.${MAX_BODY_CLASS} .next-portal,
       body.${MAX_BODY_CLASS} .next-overlay-inner,
       body.${MAX_BODY_CLASS} .next-overlay-backdrop { z-index: 100000 !important; }
+      /* 「自动到底」复选框：与 Fusion medium 按钮等高并排 */
+      .gstack-log-auto-end-wrap {
+        display: inline-flex; align-items: center; gap: 4px;
+        height: 28px; margin-right: 8px; font-size: 12px; line-height: 1;
+        color: #333; cursor: pointer; white-space: nowrap;
+        user-select: none; vertical-align: middle;
+      }
+      .gstack-log-auto-end-wrap input {
+        width: 14px; height: 14px; margin: 0; cursor: pointer; accent-color: #5584ff;
+      }
+      .gstack-log-auto-end-wrap.is-checked { color: #5584ff; }
     `;
     document.head.appendChild(style);
   }
@@ -171,6 +188,82 @@
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   }
 
+  // ---------- 自动到底（勾选后，刷新完数据滚一次） ----------
+  // 「刷新完数据」的判定：CodeMirror 的 change 事件 = 一次数据写入；连续写入
+  // （流式追加、先清空再写入、多次 setState）用 300ms debounce 合并成一轮，
+  // 静默后才滚一次，不在日志渲染过程中反复拉滚动条。覆盖点「刷新」、
+  // 站点自动轮询、切 Pod/Container、首屏加载、React 重建实例等所有来源。
+  // 状态存站点域 localStorage（@grant none 拿不到 GM_setValue），默认勾选；
+  // 取消勾选只影响后续刷新，不改动已经渲染出来的日志。
+  function readAutoEnd() {
+    try {
+      const v = localStorage.getItem(AUTO_STORAGE_KEY);
+      return v === null ? true : v === '1';
+    } catch (e) { return true; }   // 隐私模式等写不了存储时退化为默认勾选
+  }
+
+  function saveAutoEnd(on) {
+    try { localStorage.setItem(AUTO_STORAGE_KEY, on ? '1' : '0'); } catch (e) { /* ignore */ }
+  }
+
+  let autoEnd = readAutoEnd();
+  let followTimer = null;
+  const hookedCM = new WeakSet();
+
+  function scheduleFollow() {
+    if (!autoEnd) return;
+    if (followTimer) clearTimeout(followTimer);
+    followTimer = setTimeout(() => {
+      followTimer = null;
+      if (!autoEnd) return;
+      // 定时器里低频调用，现取可见块，避免闭包里的节点被 React 换掉
+      const block = visibleLogBlock();
+      if (block) scrollToEnd(block);
+    }, REFRESH_SETTLE_MS);
+  }
+
+  function cancelFollow() {
+    if (followTimer) { clearTimeout(followTimer); followTimer = null; }
+  }
+
+  // 站点重绘会重建 CodeMirror 实例，新实例已带着全量日志、不会再为这批
+  // 内容派发 change → 挂钩时主动当作一轮刷新完成，补一次滚动
+  function bindFollow(block) {
+    const cm = cmOf(block);
+    if (!cm || hookedCM.has(cm)) return;
+    hookedCM.add(cm);
+    try {
+      cm.on('change', scheduleFollow);
+      scheduleFollow();
+    } catch (e) {
+      hookedCM.delete(cm);
+    }
+  }
+
+  function makeAutoEndCheckbox() {
+    const label = document.createElement('label');
+    label.id = AUTO_WRAP_ID;
+    label.className = 'gstack-log-auto-end-wrap' + (autoEnd ? ' is-checked' : '');
+    label.title = '勾选后，每次日志数据刷新完成自动滚动到末尾';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.id = AUTO_CB_ID;
+    cb.checked = autoEnd;
+    const text = document.createElement('span');
+    text.textContent = '自动到底';
+    label.appendChild(cb);
+    label.appendChild(text);
+    return label;
+  }
+
+  // React 重绘可能把 checkbox 换成默认未勾选的新节点，扫描时对齐一次
+  function syncAutoCb(block) {
+    const cb = block.querySelector('#' + AUTO_CB_ID);
+    if (cb && cb.checked !== autoEnd) cb.checked = autoEnd;
+    const wrap = block.querySelector('#' + AUTO_WRAP_ID);
+    if (wrap) wrap.classList.toggle('is-checked', autoEnd);
+  }
+
   // ---------- 最大化 / 还原 ----------
   let maxed = false;
 
@@ -210,7 +303,7 @@
       block.classList.contains(MAX_CLASS) ? '还原' : '最大化');
   }
 
-  // ---------- 注入按钮：插在「刷新」左边，顺序 [最大化][到底][清理][刷新] ----------
+  // ---------- 注入控件：插在「刷新」左边，顺序 [最大化][到底][清理][☐自动到底][刷新] ----------
   function makeButton() {
     // 复用站点 Fusion Next 按钮的类名，外观与「下载」一致
     const btn = document.createElement('button');
@@ -248,7 +341,7 @@
     const refreshBtn = findRefreshBtn(block);
     if (!refreshBtn) return;
 
-    // 目标顺序 [最大化][到底][清理][刷新]。
+    // 目标顺序 [最大化][到底][清理][☐自动到底][刷新]。
     // 注意：只在缺失/错位时才动 DOM——每轮扫描哪怕无意义地重排一次，
     // 都会被 MutationObserver 捕获形成 无限扫描循环（页面假死）
     const parent = refreshBtn.parentNode;
@@ -260,6 +353,7 @@
     let maxBtn = block.querySelector('#' + BTN_ID);
     let endBtn = block.querySelector('#' + SCROLL_BTN_ID);
     let clearBtn = block.querySelector('#' + CLEAR_BTN_ID);
+    let autoWrap = block.querySelector('#' + AUTO_WRAP_ID);
     if (!endBtn) {
       endBtn = makeEndButton();
       parent.insertBefore(endBtn, refreshBtn);
@@ -268,16 +362,22 @@
       clearBtn = makeClearButton();
       parent.insertBefore(clearBtn, refreshBtn);
     }
+    if (!autoWrap) {
+      autoWrap = makeAutoEndCheckbox();
+      parent.insertBefore(autoWrap, refreshBtn);
+    }
     if (!maxBtn) {
       maxBtn = makeButton();
       parent.insertBefore(maxBtn, endBtn);
     }
     if (maxBtn.nextElementSibling !== endBtn ||
         endBtn.nextElementSibling !== clearBtn ||
-        clearBtn.nextElementSibling !== refreshBtn) {
+        clearBtn.nextElementSibling !== autoWrap ||
+        autoWrap.nextElementSibling !== refreshBtn) {
       parent.insertBefore(maxBtn, endBtn);
       parent.insertBefore(endBtn, clearBtn);
-      parent.insertBefore(clearBtn, refreshBtn);
+      parent.insertBefore(clearBtn, autoWrap);
+      parent.insertBefore(autoWrap, refreshBtn);
     }
     // 只绑定一次（scan 会被 MutationObserver 频繁调用，重复绑定会叠加）；
     // 点击时现取可见块，避免闭包里的 block 过期
@@ -302,6 +402,25 @@
         if (b) scrollToEnd(b);
       });
     }
+    if (!autoWrap._gstackBound) {
+      autoWrap._gstackBound = true;
+      const cb = autoWrap.querySelector('input');
+      if (cb) {
+        cb.addEventListener('change', () => {
+          autoEnd = cb.checked;
+          saveAutoEnd(autoEnd);
+          autoWrap.classList.toggle('is-checked', autoEnd);
+          if (autoEnd) {
+            const b = visibleLogBlock();
+            if (b) scrollToEnd(b);       // 勾选即时生效：先到一次末尾
+          } else {
+            cancelFollow();              // 取消勾选：丢掉排队中未执行的滚动
+          }
+          console.log(LOG, autoEnd ? '自动到底：已勾选' : '自动到底：已取消');
+        });
+      }
+    }
+    syncAutoCb(block);
     updateBtnText(block);
 
     // 最大化状态下块被 React 重绘换新：重新套上最大化样式
@@ -330,6 +449,7 @@
         b.querySelector('#' + BTN_ID) &&
         b.querySelector('#' + SCROLL_BTN_ID) &&
         b.querySelector('#' + CLEAR_BTN_ID) &&
+        b.querySelector('#' + AUTO_WRAP_ID) &&
         (!maxed || b.classList.contains(MAX_CLASS))) {
       // 最大化期间站点重渲染（刷新/切页签会重新 setOption）可能把
       // CodeMirror-wrap 加回来 → 补摘一次。只读 querySelector + 可能的
@@ -338,11 +458,15 @@
         const wrapNode = b.querySelector('.' + CM_WRAP_CLASS);
         if (wrapNode) stripWrap(b);
       }
+      // 站点刷新日志可能重建 CodeMirror 实例；新实例要重新挂 change 监听。
+      // 只读一次 querySelector + WeakSet 判断，不写 DOM、不读布局
+      bindFollow(b);
       return;
     }
     const block = visibleLogBlock();
     if (!block) {
       currentBlock = null;
+      cancelFollow();                      // 切页：丢掉指向旧块的待执行滚动
       if (maxed) {
         maxed = false;                       // 日志块整个没了（切页）：复位
         document.body.classList.remove(MAX_BODY_CLASS);
@@ -351,6 +475,10 @@
     }
     currentBlock = block;
     decorate(block);
+    bindFollow(block);
+    // 整块被 React 重绘本身就是一轮刷新；拿不到 CM 实例时（change 信号
+    // 缺失）用这个兜底，保证勾选状态下仍会滚一次
+    if (!cmOf(block)) scheduleFollow();
     decorated.add(block);
     // 隐藏的旧块残留：清掉最大化标记
     document.querySelectorAll('.workload-details-log.' + MAX_CLASS).forEach((el) => {
