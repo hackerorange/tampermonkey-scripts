@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达 Rancher · 404 页面自动跳转集群列表
 // @namespace    zhongct.glodon.rancher.redirect
-// @version      1.3.1
-// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；日志弹窗固定为视口大小（标题与按钮不再被滚出屏幕）。支持 rancher / rancher-sg / rancher-pri 三个环境。
+// @version      1.4.0
+// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；日志弹窗固定为视口大小（标题与按钮不再被滚出屏幕），弹窗内加「暂停滚动」开关——勾选后冻结日志自动滚动、可自由上翻，取消勾选立即回到底部恢复跟随。支持 rancher / rancher-sg / rancher-pri 三个环境。
 // @author       zhongct
 // @match        *://rancher.glodon.com/*
 // @match        *://rancher-sg.glodon.com/*
@@ -32,6 +32,9 @@
   const LOG_BOX_CLASS = 'r404-log-box';
   const LOG_OVERLAY_CLASS = 'r404-log-overlay';
   const LOG_LOCK_CLASS = 'r404-log-lock';
+  // 「暂停滚动」悬浮开关（v1.4.0）：勾选后冻结 Ember 对日志体的程序化滚动
+  const PAUSE_CHIP_CLASS = 'r404-pause-chip';
+  const BOTTOM_ALLOW_MS = 600;           // 点「回到底部」后放行程序滚动的窗口
   const LOG = '[Rancher 404 跳转]';
 
   let handled = false;   // 本次页面生命周期内是否已处理（跳转或已放弃）
@@ -287,6 +290,40 @@
       /* 按钮条保持 Rancher 原样式（底部绝对定位 + 内部绝对定位的勾选组），
          容器已被限高，它自然贴在盒子底部，不会跟着长日志跑掉 */
       .modal-overlay.${LOG_OVERLAY_CLASS} .footer-actions { flex: 0 0 auto !important; }
+
+      /* 「暂停滚动」悬浮开关：挂在 overlay 右下、按钮条上方，独立于
+         Rancher 的 footer 布局（footer 内部是绝对定位，硬塞会互相叠） */
+      .modal-overlay.${LOG_OVERLAY_CLASS} > .${PAUSE_CHIP_CLASS} {
+        position: absolute !important;
+        right: 20px !important;
+        bottom: 56px !important;
+        z-index: 60 !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 5px !important;
+        padding: 3px 12px !important;
+        font-size: 12px !important;
+        line-height: 1.4 !important;
+        color: #4b5163 !important;
+        background: rgba(255, 255, 255, .96) !important;
+        border: 1px solid #cfd6e0 !important;
+        border-radius: 14px !important;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, .14) !important;
+        cursor: pointer !important;
+        user-select: none !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} > .${PAUSE_CHIP_CLASS} input {
+        margin: 0 !important;
+        width: 13px !important;
+        height: 13px !important;
+        cursor: pointer !important;
+        accent-color: #3d7ff0 !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} > .${PAUSE_CHIP_CLASS}.is-checked {
+        color: #2b6cb0 !important;
+        border-color: #8db4ec !important;
+        background: #eaf2ff !important;
+      }
     `;
     const style = document.createElement('style');
     style.id = 'r404-log-modal-style';
@@ -317,12 +354,109 @@
         if (!el.classList.contains(LOG_BOX_CLASS)) el.classList.add(LOG_BOX_CLASS);
         el = el.parentElement;
       }
+      // 「暂停滚动」：给日志体挂程序滚动拦截 + 确保开关存在（pre 被 Ember
+      // 重绘换新时，下一轮扫描会重新武装）
+      const pre = overlay.querySelector('pre.log-body');
+      if (pre) {
+        armPauseScroll(pre);
+        ensurePauseChip(overlay);
+      }
     });
     // 弹窗关掉后恢复背景滚动
     const shouldLock = open > 0;
     if (document.body.classList.contains(LOG_LOCK_CLASS) !== shouldLock) {
       document.body.classList.toggle(LOG_LOCK_CLASS, shouldLock);
     }
+  }
+
+  // ============ 暂停滚动（v1.4.0） ============
+  // Ember 在日志流式输出时会程序化地把 pre.log-body 滚到底部，翻历史会被拽走。
+  // 做法：在 pre 实例上用 defineProperty 影子化 scrollTop（遮住 Element.prototype
+  // 上的同名访问器）——暂停期间吞掉所有程序化赋值；用户滚轮/拖动条走的是
+  // 浏览器原生滚动，不经过 setter，完全不受影响。getter 始终返回 realTop
+  // （由 scroll 事件与原生值保持同步），Ember 自己读 scrollTop 判断是否
+  // 跟随时拿到的也是正确值。
+  function armPauseScroll(pre) {
+    if (!pre || pre._r404PauseArmed) return;
+    pre._r404PauseArmed = true;
+    const state = { paused: false, allowUntil: 0 };
+    try {
+      const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+      if (!desc || !desc.get || !desc.set) return;   // 环境不支持：开关仍在，但不拦截
+      const nativeGet = () => desc.get.call(pre);
+      const nativeSet = (v) => { try { desc.set.call(pre, v); } catch (e) { /* ignore */ } };
+      let realTop = nativeGet();
+      // 原生滚动（滚轮/拖动条/键盘）只触发 scroll 事件，不经过 setter，在这里同步
+      pre.addEventListener('scroll', () => { realTop = nativeGet(); }, { passive: true });
+      Object.defineProperty(pre, 'scrollTop', {
+        configurable: true,
+        get() { return realTop; },
+        set(v) {
+          v = Number(v) || 0;
+          // 暂停期间吞掉程序滚动；「回到底部」点击后的放行窗口内除外
+          if (state.paused && Date.now() >= state.allowUntil) return;
+          state.allowUntil = 0;            // 放行是一次性的，用掉即失效
+          nativeSet(v);
+          realTop = nativeGet();           // 原生 setter 会钳制到合法区间，回读对齐
+        },
+      });
+      // Ember 也可能用 scrollTo() 滚动，一并包住
+      const nativeScrollTo = pre.scrollTo;
+      if (typeof nativeScrollTo === 'function') {
+        pre.scrollTo = function (...args) {
+          if (state.paused && Date.now() >= state.allowUntil) return;
+          state.allowUntil = 0;
+          return nativeScrollTo.apply(pre, args);
+        };
+      }
+      pre._r404PauseState = state;
+    } catch (e) { /* defineProperty 失败则退化为不拦截 */ }
+  }
+
+  // 「暂停滚动」开关：悬浮在 overlay 右下、按钮条上方（CSS 定位）。
+  // 每次打开弹窗默认不勾选；取消勾选时立即回到底部并恢复原生跟随。
+  function ensurePauseChip(overlay) {
+    if (overlay.querySelector('.' + PAUSE_CHIP_CLASS)) return;
+    const chip = document.createElement('label');
+    chip.className = PAUSE_CHIP_CLASS;
+    chip.title = '勾选后暂停日志自动滚动，可自由上翻查看；取消勾选立即回到底部并恢复跟随';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    const text = document.createElement('span');
+    text.textContent = '暂停滚动';
+    chip.appendChild(cb);
+    chip.appendChild(text);
+    cb.addEventListener('change', () => {
+      const on = cb.checked;
+      chip.classList.toggle('is-checked', on);
+      const pre = overlay.querySelector('pre.log-body');
+      const st = pre && pre._r404PauseState;
+      if (st) st.paused = on;
+      if (!on && pre) {
+        try { pre.scrollTop = pre.scrollHeight; } catch (e) { /* ignore */ }
+      }
+      console.log(LOG, on ? '已暂停日志自动滚动（可自由上翻）' : '已恢复日志自动滚动（已回到底部）');
+    });
+    overlay.appendChild(chip);
+  }
+
+  // 暂停期间点 Rancher 自带的「回到底部」要仍然有效：捕获阶段委托拦截
+  // 该按钮的点击，给对应日志体开一个短暂的放行窗口（BOTTOM_ALLOW_MS）
+  function bindBottomButton() {
+    document.addEventListener('click', (e) => {
+      const t = e.target;
+      const btn = t && t.closest ? t.closest('button') : null;
+      if (!btn) return;
+      const overlay = btn.closest('.modal-overlay');
+      if (!overlay || !overlay.classList.contains(LOG_OVERLAY_CLASS)) return;
+      if (!/回到底部|bottom/i.test(btn.textContent || '')) return;
+      const pre = overlay.querySelector('pre.log-body');
+      const st = pre && pre._r404PauseState;
+      if (st && st.paused) {
+        st.allowUntil = Date.now() + BOTTOM_ALLOW_MS;
+        console.log(LOG, '放行「回到底部」的程序滚动（600ms）');
+      }
+    }, true);
   }
 
   // ============ 监听（SPA 会随时重绘，不重载页面也可能突然变成错误页）============
@@ -361,6 +495,7 @@
   }
   observe();
   bindLogoClick();
+  bindBottomButton();
 
-  console.log(LOG, '已启动：404 自动跳转 + Logo 跳转 + 日志弹窗固定');
+  console.log(LOG, '已启动：404 自动跳转 + Logo 跳转 + 日志弹窗固定 + 暂停滚动');
 })();
