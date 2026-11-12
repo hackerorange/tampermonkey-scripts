@@ -8,7 +8,7 @@
 
 ---
 
-## 1. `rancher-404-redirect.user.js`（v1.4.0）
+## 1. `rancher-404-redirect.user.js`（v1.5.0）
 
 ### 1.1 背景与目标
 
@@ -51,7 +51,7 @@
 | FR-5 | Logo 点击跳转 | 点顶部 / 侧边 Logo 一律去 `/g/clusters`，原本的 `/dashboard` 行为被覆盖 |
 | FR-6 | 不干扰正常操作 | 组合键点击、登录页、正常页面（无错误页）不受影响 |
 | FR-7 | 日志弹窗固定 | 打开「日志查看」弹窗后，弹窗始终完整落在视口内：标题栏在顶部、按钮条在底部、只有日志区可滚；关闭后背景恢复可滚 |
-| FR-8 | 暂停滚动 | 日志弹窗内提供「暂停滚动」开关：勾选后新日志不再把视图拉走（冻结在当前位置，可自由上翻）；取消勾选立即回到底部并恢复自动跟随；暂停期间 Rancher 自带「回到底部」按钮仍有效 |
+| FR-8 | 暂停滚动 | 日志弹窗内提供「暂停滚动」开关：勾选后日志内容**停止追加**、视图完全冻结（可自由上翻）；取消勾选恢复追加并立即回到底部跟随；暂停期间 Rancher 自带「回到底部」按钮仍有效 |
 
 ### 1.4 行为细则
 
@@ -133,19 +133,23 @@ DOMContentLoaded（readyState=loading 时）┘
 | 背景滚动 | 跟随页面滚动 | `body` 锁定 |
 | 四边留白（1920×913 视口实测） | 容器 1554px 高、左右随宽度变化 | 左/右/上/下均 **12px**，容器 1896×889 |
 
-#### 1.4.6 暂停滚动（v1.4.0）
+#### 1.4.6 暂停滚动（v1.4.0，v1.5.0 加强为「内容也停止追加」）
 
-Rancher 日志流式输出时会程序化地把 `pre.log-body` 滚到底部，翻到中间看历史就被拽走。处理：
+Rancher 日志流式输出时会持续往 `pre.log-body` 写内容并程序化滚到底部，翻到中间看历史就被拽走。v1.4.0 只冻结滚动位置，v1.5.0 起暂停期间连日志内容也停止追加，视图完全静止。处理：
 
 1. **开关 UI**：悬浮胶囊（`label.r404-pause-chip` + 原生 checkbox + 文字「暂停滚动」）挂在 overlay 右下角（`right:20px; bottom:56px`，绝对定位），独立于 footer 的绝对定位布局互不干扰；勾选态蓝底高亮。每次打开弹窗默认不勾选，不做持久化。
-2. **拦截原理**：对 `pre.log-body` **实例** `Object.defineProperty` 影子化 `scrollTop`（遮住 `Element.prototype` 上的同名访问器）：
+2. **滚动拦截**：对 `pre.log-body` **实例** `Object.defineProperty` 影子化 `scrollTop`（遮住 `Element.prototype` 上的同名访问器）：
    - getter 始终返回 `realTop`（由 `scroll` 事件与原生值保持同步）——Ember 自己读 `scrollTop` 判断是否跟随，拿到的也是正确值；
    - setter 在暂停期间**吞掉一切程序化赋值**；用户的滚轮/拖动条/键盘滚动走浏览器原生路径，不经过 setter，完全不受影响；native set 后回读对齐（原生 setter 会钳制到合法区间）；
    - `pre.scrollTo` 同样包装（Ember 换一种写法也能拦住）。
-3. **回到底部兼容**：捕获阶段委托监听「回到底部」按钮（文本匹配 `/回到底部|bottom/i` 且在已标记弹窗内）的点击，给对应日志体开 **600ms 放行窗口**（`allowUntil`），放行是一次性的，用掉即失效——之后新日志到达重新冻结。
-4. **语义**：暂停 = 冻结视图位置——勾选时即使正停在底部也会冻结（新日志在下方追加、视图不动）；取消勾选立即 `scrollTop = scrollHeight` 回到底部，恢复 Rancher 原生跟随。
-5. **兜底**：`defineProperty` 不可用（极端环境）时开关仍显示但不拦截，行为退化为原生。
-6. **幂等**：`pre._r404PauseArmed` 防重复武装；pre 被 Ember 重绘换新时下一轮扫描重新武装；chip 按 overlay 内 `.r404-pause-chip` 存在性检查防重复注入；chip 挂在 overlay 上，随弹窗一起销毁。
+3. **内容拦截（v1.5.0）**：同样在 pre 实例上影子化内容写入通道，暂停期间全部吞掉：
+   - 访问器：`textContent`（`Node.prototype`）、`innerHTML`（`Element.prototype`）、`innerText`（`HTMLElement.prototype`）——setter 直接 return，getter 透传原型；
+   - 方法：`appendChild` / `insertBefore`（吞掉但**返回传入节点**，避免调用方拿到 undefined 崩溃）、`append` / `prepend` / `insertAdjacentText` / `insertAdjacentHTML`（吞掉无返回值）；
+   - **兜底网**：`MutationObserver`（childList + subtree + characterData + oldValue）监听 pre，暂停期回滚漏网写入——新增节点直接移除；`characterData` 变更以「认可值」回滚（勾选瞬间快照 pre 已有文本节点的 `data` 存 WeakMap；回滚后的记录与认可值一致时跳过，防震荡）。未影子化路径（Range 插入、低层 API 等）由兜底网兜住。
+4. **放行窗口**：捕获阶段委托监听「回到底部」按钮（文本匹配 `/回到底部|bottom/i` 且在已标记弹窗内）的点击，给对应日志体开 **600ms 放行窗口**（`allowUntil`），窗口期内滚动**和内容写入**都放行；放行是一次性的，用掉即失效——之后重新冻结。
+5. **语义**：暂停 = 内容 + 滚动双冻结——勾选时即使正停在底部，新日志也不再出现（暂停期间错过的输出**不回放**，取消勾选后从 Ember 的下一个写入点继续）；取消勾选立即 `scrollTop = scrollHeight` 回到底部，恢复追加与跟随。
+6. **兜底**：`defineProperty` 不可用（极端环境）时开关仍显示，状态照挂但拦截退化（尽力而为）。
+7. **幂等**：`pre._r404PauseArmed` 防重复武装；pre 被 Ember 重绘换新时下一轮扫描重新武装；chip 按 overlay 内 `.r404-pause-chip` 存在性检查防重复注入；chip 挂在 overlay 上，随弹窗一起销毁。
 
 ### 1.5 配置项（脚本顶部常量）
 
@@ -171,7 +175,7 @@ Rancher 日志流式输出时会程序化地把 `pre.log-body` 滚到底部，�
 | `settleTimer` | 内存 | 单页 | 复核定时器句柄，避免重复排程 |
 | 防死循环记录 | `sessionStorage` | 单标签页 | `{ host, ts, count }`；`host` 不同或 `now - ts > GUARD_WINDOW` 时重置计数 |
 | `r404-log-overlay` / `r404-log-box` / `r404-log-lock` | DOM 类名 | 弹窗存续期间 | 分别标记弹窗遮罩、布局盒子链、`body` 滚动锁；弹窗关闭后无需清理（节点随弹窗一起销毁） |
-| `pre._r404PauseArmed` / `pre._r404PauseState` | pre 元素实例属性 | 弹窗打开期间 | 暂停滚动的武装标记与状态（`paused` / `allowUntil`）；pre 随 Ember 重绘换新后由下一轮扫描重新武装 |
+| `pre._r404PauseArmed` / `pre._r404PauseState` | pre 元素实例属性 | 弹窗打开期间 | 暂停滚动的武装标记与状态（`paused` / `allowUntil` / `setPaused` / `_approved` 认可值表）；pre 随 Ember 重绘换新后由下一轮扫描重新武装 |
 
 `sessionStorage` 按标签页隔离，多个标签页各自计数、互不影响；隐私模式写入失败时静默降级（仅失去计数能力，不影响跳转）。
 
@@ -197,9 +201,11 @@ Rancher 日志流式输出时会程序化地把 `pre.log-body` 滚到底部，�
 | 非日志类弹窗 | 不含 `.container-log` 的弹窗不受影响，仍用 Rancher 原生布局 |
 | Rancher 给 `.footer-actions` 改结构 | 固定效果仍在（高度由容器限制），但若按钮条改为常规流后与日志重叠，需要补 `padding-bottom` |
 | 弹窗内点「下载日志」等按钮 | 不受影响，脚本只改布局不改事件 |
-| Ember 改用 scrollIntoView 或操作内层元素滚动 | `scrollTop`/`scrollTo` 的影子拦截覆盖不到，暂停失效（目前未见该用法） |
+| Ember 改用 scrollIntoView 或操作内层元素滚动 | `scrollTop`/`scrollTo` 的影子拦截覆盖不到，滚动冻结失效（内容拦截不受影响）（目前未见该用法） |
 | 「回到底部」按钮文案变更 | 文本匹配 `/回到底部|bottom/i` 失效，暂停期间该按钮被冻结（滚轮滚到底仍可用） |
 | 极端环境 `defineProperty` 失败 | 开关仍显示但不拦截，行为退化为 Rancher 原生 |
+| Ember 走完全未知的低层路径写入 | 影子化 API + 兜底网之外仍有漏网可能（概率极低） |
+| 暂停期间错过的日志 | 不缓存不回放，取消勾选后从 Ember 下一个写入点继续；完整历史建议用「下载日志」 |
 | 弹窗关闭后重开 | chip 挂在 overlay 上随弹窗销毁；重开是新实例，开关默认不勾选 |
 
 ### 1.9 验收清单（手动）
@@ -220,9 +226,9 @@ Rancher 日志流式输出时会程序化地把 `pre.log-body` 滚到底部，�
 | 12 | 在弹窗内滚轮 / 拖动 | 日志内部滚动，背景页面不动 |
 | 13 | 关闭弹窗后滚动页面 | 背景恢复可滚 |
 | 14 | 打开普通确认弹窗（无 `.container-log`） | 布局与原生一致，未被改动 |
-| 15 | 打开「日志查看」，勾选「暂停滚动」，日志持续输出 | 视图冻结在当前位置，可自由上翻，不被拉到底部 |
-| 16 | 暂停状态下点「回到底部」 | 仍能滚到底；之后新日志到达再次冻结在底部位置 |
-| 17 | 取消勾选「暂停滚动」 | 立即回到底部，恢复自动跟随；开关蓝底高亮消失 |
+| 15 | 打开「日志查看」，勾选「暂停滚动」，日志持续输出 | 日志内容**停止追加**（行数不再增长）、视图完全静止；滚轮/拖动条可自由上翻 |
+| 16 | 暂停状态下点「回到底部」 | 仍能滚到底（放行窗口）；此后恢复冻结，新内容依旧不追加 |
+| 17 | 取消勾选「暂停滚动」 | 恢复追加（从 Ember 下一个写入点继续，暂停期间内容不回放），立即回到底部跟随；开关蓝底高亮消失 |
 
 ### 1.10 版本历史
 
@@ -234,6 +240,7 @@ Rancher 日志流式输出时会程序化地把 `pre.log-body` 滚到底部，�
 | 1.3.0 | 新增日志弹窗固定：overlay 固定视口、容器限高、日志区内部滚动、背景滚动锁；`PIN_LOG_MODAL` 可开关 |
 | 1.3.1 | 弹窗宽度铺满：去掉 1280px 上限，四边留白统一 12px（原左右空白偏大） |
 | 1.4.0 | 日志弹窗新增「暂停滚动」开关：实例级影子 `scrollTop`/`scrollTo` 冻结 Ember 自动跟随（滚轮等原生滚动不受影响）；「回到底部」按钮点击开 600ms 放行窗口；取消勾选立即回到底部恢复跟随 |
+| 1.5.0 | 暂停升级为「内容也停止追加」：影子化 pre 实例的内容写入通道（`textContent`/`innerHTML`/`innerText`/`appendChild`/`append`/`prepend`/`insertBefore`/`insertAdjacent*`），暂停期全部吞掉；MutationObserver 兜底网回滚漏网写入（characterData 按认可值回滚防震荡）；暂停期间错过的输出不回放 |
 
 ---
 

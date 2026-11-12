@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达 Rancher · 404 页面自动跳转集群列表
 // @namespace    zhongct.glodon.rancher.redirect
-// @version      1.4.0
-// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；日志弹窗固定为视口大小（标题与按钮不再被滚出屏幕），弹窗内加「暂停滚动」开关——勾选后冻结日志自动滚动、可自由上翻，取消勾选立即回到底部恢复跟随。支持 rancher / rancher-sg / rancher-pri 三个环境。
+// @version      1.5.0
+// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；日志弹窗固定为视口大小（标题与按钮不再被滚出屏幕），弹窗内加「暂停滚动」开关——勾选后日志内容停止追加、视图完全冻结，可自由上翻，取消勾选恢复追加并立即回到底部跟随。支持 rancher / rancher-sg / rancher-pri 三个环境。
 // @author       zhongct
 // @match        *://rancher.glodon.com/*
 // @match        *://rancher-sg.glodon.com/*
@@ -369,57 +369,152 @@
     }
   }
 
-  // ============ 暂停滚动（v1.4.0） ============
-  // Ember 在日志流式输出时会程序化地把 pre.log-body 滚到底部，翻历史会被拽走。
-  // 做法：在 pre 实例上用 defineProperty 影子化 scrollTop（遮住 Element.prototype
-  // 上的同名访问器）——暂停期间吞掉所有程序化赋值；用户滚轮/拖动条走的是
-  // 浏览器原生滚动，不经过 setter，完全不受影响。getter 始终返回 realTop
-  // （由 scroll 事件与原生值保持同步），Ember 自己读 scrollTop 判断是否
-  // 跟随时拿到的也是正确值。
+  // ============ 暂停滚动（v1.4.0 起，v1.5.0 加强为「内容也停止追加」） ============
+  // Ember 在日志流式输出时会持续往 pre.log-body 写内容，并把视图程序化滚到底部，
+  // 翻历史会被拽走。做法：在 pre 实例上用 defineProperty / 方法包装做「影子化」——
+  //   1. 滚动通道：scrollTop / scrollTo 在暂停期吞掉程序化赋值（用户滚轮/拖动条
+  //      走浏览器原生路径，不经过 setter，不受影响）；
+  //   2. 内容通道（v1.5.0）：textContent / innerHTML / innerText / appendChild /
+  //      append / prepend / insertBefore / insertAdjacentText / insertAdjacentHTML
+  //      在暂停期全部吞掉，日志内容不再往下追加，视图完全静止；
+  //   3. 兜底网：MutationObserver 监听 pre 的 childList / characterData，暂停期
+  //      回滚漏网的新增节点与文本变更（characterData 用「认可值」表防回滚震荡）。
+  // 取消暂停后一切通道放行，Ember 的后续写入照常进来。
   function armPauseScroll(pre) {
     if (!pre || pre._r404PauseArmed) return;
     pre._r404PauseArmed = true;
-    const state = { paused: false, allowUntil: 0 };
-    try {
-      const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
-      if (!desc || !desc.get || !desc.set) return;   // 环境不支持：开关仍在，但不拦截
-      const nativeGet = () => desc.get.call(pre);
-      const nativeSet = (v) => { try { desc.set.call(pre, v); } catch (e) { /* ignore */ } };
-      let realTop = nativeGet();
-      // 原生滚动（滚轮/拖动条/键盘）只触发 scroll 事件，不经过 setter，在这里同步
-      pre.addEventListener('scroll', () => { realTop = nativeGet(); }, { passive: true });
-      Object.defineProperty(pre, 'scrollTop', {
-        configurable: true,
-        get() { return realTop; },
-        set(v) {
-          v = Number(v) || 0;
-          // 暂停期间吞掉程序滚动；「回到底部」点击后的放行窗口内除外
-          if (state.paused && Date.now() >= state.allowUntil) return;
-          state.allowUntil = 0;            // 放行是一次性的，用掉即失效
-          nativeSet(v);
-          realTop = nativeGet();           // 原生 setter 会钳制到合法区间，回读对齐
-        },
-      });
-      // Ember 也可能用 scrollTo() 滚动，一并包住
-      const nativeScrollTo = pre.scrollTo;
-      if (typeof nativeScrollTo === 'function') {
-        pre.scrollTo = function (...args) {
-          if (state.paused && Date.now() >= state.allowUntil) return;
-          state.allowUntil = 0;
-          return nativeScrollTo.apply(pre, args);
-        };
+    const state = { paused: false, allowUntil: 0, _approved: null };
+    // 暂停判断与「回到底部」放行窗口共用一套逻辑：窗口期内滚动和写入都放行
+    const blocked = () => state.paused && Date.now() >= state.allowUntil;
+
+    // 暂停开始时快照已有文本节点的当前值，作为 characterData 回滚的「认可值」
+    state.setPaused = (v) => {
+      state.paused = v;
+      if (v) {
+        state._approved = new WeakMap();
+        try {
+          for (const n of pre.childNodes) {
+            if (n.nodeType === 3) state._approved.set(n, n.data);
+          }
+        } catch (e) { /* 快照失败则兜底网不回滚 characterData，不影响其余功能 */ }
+      } else {
+        state._approved = null;
       }
+    };
+
+    try {
+      // ---- 1) 影子化内容写入访问器（textContent 在 Node.prototype，innerText 在
+      //      HTMLElement.prototype，innerHTML 在 Element.prototype）----
+      const shadowAccessor = (proto, name) => {
+        const d = Object.getOwnPropertyDescriptor(proto, name);
+        if (d && d.get && d.set) {
+          Object.defineProperty(pre, name, {
+            configurable: true,
+            get() { return d.get.call(this); },
+            set(v) { if (blocked()) return; d.set.call(this, v); },
+          });
+        }
+      };
+      shadowAccessor(Node.prototype, 'textContent');
+      shadowAccessor(Element.prototype, 'innerHTML');
+      shadowAccessor(HTMLElement.prototype, 'innerText');
+
+      // ---- 2) 影子化内容写入方法（append/prepend/insertAdjacent* 无返回值；
+      //      appendChild/insertBefore 需返回节点，避免调用方拿到 undefined 崩溃）----
+      const wrapMethod = (name, keepArg0) => {
+        const fn = pre[name];
+        if (typeof fn !== 'function') return;
+        pre[name] = function (...args) {
+          if (blocked()) return keepArg0 ? args[0] : undefined;
+          return fn.apply(this, args);
+        };
+      };
+      wrapMethod('appendChild', true);
+      wrapMethod('insertBefore', true);
+      wrapMethod('append', false);
+      wrapMethod('prepend', false);
+      wrapMethod('insertAdjacentText', false);
+      wrapMethod('insertAdjacentHTML', false);
+
+      // ---- 3) 滚动通道（v1.4.0 原有逻辑）----
+      const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+      if (desc && desc.get && desc.set) {
+        const nativeGet = () => desc.get.call(pre);
+        const nativeSet = (v) => { try { desc.set.call(pre, v); } catch (e) { /* ignore */ } };
+        let realTop = nativeGet();
+        // 原生滚动（滚轮/拖动条/键盘）只触发 scroll 事件，不经过 setter，在这里同步
+        pre.addEventListener('scroll', () => { realTop = nativeGet(); }, { passive: true });
+        Object.defineProperty(pre, 'scrollTop', {
+          configurable: true,
+          get() { return realTop; },
+          set(v) {
+            v = Number(v) || 0;
+            // 暂停期间吞掉程序滚动；「回到底部」点击后的放行窗口内除外
+            if (blocked()) return;
+            state.allowUntil = 0;            // 放行是一次性的，用掉即失效
+            nativeSet(v);
+            realTop = nativeGet();           // 原生 setter 会钳制到合法区间，回读对齐
+          },
+        });
+        // Ember 也可能用 scrollTo() 滚动，一并包住
+        const nativeScrollTo = pre.scrollTo;
+        if (typeof nativeScrollTo === 'function') {
+          pre.scrollTo = function (...args) {
+            if (blocked()) return undefined;
+            state.allowUntil = 0;
+            return nativeScrollTo.apply(pre, args);
+          };
+        }
+      }
+
+      // ---- 4) 兜底网：暂停期回滚漏网的写入（走 Range/低层 API 等未影子化的路径）。
+      //      characterData 回滚以「认可值」为准，且回滚后的记录与认可值一致时跳过，
+      //      避免回滚自身触发的 mutation 造成震荡 ----
+      const net = new MutationObserver((muts) => {
+        if (!blocked()) return;
+        try {
+          for (const m of muts) {
+            if (m.type === 'childList') {
+              for (const n of m.addedNodes) {
+                try {
+                  if (n.remove) n.remove(); else if (m.target) m.target.removeChild(n);
+                } catch (e) { /* 节点已被移除等情况，忽略 */ }
+              }
+            } else if (m.type === 'characterData' && m.target && m.target.nodeType === 3) {
+              const map = state._approved;
+              if (!map) continue;
+              if (!map.has(m.target)) {
+                // 暂停开始后漏网新增的文本节点：认可其当前值，之后的变化照样回滚
+                map.set(m.target, m.target.data);
+                continue;
+              }
+              const good = map.get(m.target);
+              if (m.target.data !== good) m.target.data = good;
+            }
+          }
+        } catch (e) { /* 兜底网自身出错不影响页面 */ }
+      });
+      net.observe(pre, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        characterDataOldValue: true,
+      });
+
       pre._r404PauseState = state;
-    } catch (e) { /* defineProperty 失败则退化为不拦截 */ }
+    } catch (e) {
+      // defineProperty 失败则退化为不拦截；状态仍挂上，开关与滚动冻结尽力而为
+      pre._r404PauseState = state;
+    }
   }
 
   // 「暂停滚动」开关：悬浮在 overlay 右下、按钮条上方（CSS 定位）。
-  // 每次打开弹窗默认不勾选；取消勾选时立即回到底部并恢复原生跟随。
+  // 每次打开弹窗默认不勾选；勾选后内容与滚动同时冻结；取消勾选恢复追加并回到底部。
   function ensurePauseChip(overlay) {
     if (overlay.querySelector('.' + PAUSE_CHIP_CLASS)) return;
     const chip = document.createElement('label');
     chip.className = PAUSE_CHIP_CLASS;
-    chip.title = '勾选后暂停日志自动滚动，可自由上翻查看；取消勾选立即回到底部并恢复跟随';
+    chip.title = '勾选后日志内容停止追加、视图完全冻结，可自由上翻；取消勾选恢复追加并立即回到底部';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     const text = document.createElement('span');
@@ -431,11 +526,15 @@
       chip.classList.toggle('is-checked', on);
       const pre = overlay.querySelector('pre.log-body');
       const st = pre && pre._r404PauseState;
-      if (st) st.paused = on;
+      if (st && typeof st.setPaused === 'function') {
+        st.setPaused(on);
+      } else if (st) {
+        st.paused = on;
+      }
       if (!on && pre) {
         try { pre.scrollTop = pre.scrollHeight; } catch (e) { /* ignore */ }
       }
-      console.log(LOG, on ? '已暂停日志自动滚动（可自由上翻）' : '已恢复日志自动滚动（已回到底部）');
+      console.log(LOG, on ? '已暂停：日志停止追加、视图冻结（可自由上翻）' : '已恢复：日志继续追加（已回到底部跟随）');
     });
     overlay.appendChild(chip);
   }
