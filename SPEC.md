@@ -8,11 +8,11 @@
 
 ---
 
-## 1. `rancher-404-redirect.user.js`（v1.5.0）
+## 1. `rancher-404-redirect.user.js`（v1.6.0）
 
 ### 1.1 背景与目标
 
-广联达 Rancher 三套环境的 Web 前端是 Nuxt 单页应用。登录后跳转偶发失败，页面渲染出 Nuxt 默认错误页：
+广联达 Rancher 四套环境（rancher / rancher-sg / rancher-pri / rancher-dev）的 Web 前端是 Nuxt 单页应用。登录后跳转偶发失败，页面渲染出 Nuxt 默认错误页：
 
 ```html
 <div class="__nuxt-error-page">
@@ -34,7 +34,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| `@match` | `*://rancher.glodon.com/*`、`*://rancher-sg.glodon.com/*`、`*://rancher-pri.glodon.com/*`（`*://` 同时覆盖 http / https） |
+| `@match` | `*://rancher.glodon.com/*`、`*://rancher-sg.glodon.com/*`、`*://rancher-pri.glodon.com/*`、`*://rancher-dev.glodon.com/*`（`*://` 同时覆盖 http / https） |
 | `@run-at` | `document-start`（尽早挂监听，避免错过首帧渲染的错误页） |
 | `@grant` | `none`（只用标准 DOM / Web Storage API） |
 | `@noframes` | 是，避免在 iframe 里重复执行 |

@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         广联达 Rancher · 404 页面自动跳转集群列表
 // @namespace    zhongct.glodon.rancher.redirect
-// @version      1.5.0
-// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；日志弹窗固定为视口大小（标题与按钮不再被滚出屏幕），弹窗内加「暂停滚动」开关——勾选后日志内容停止追加、视图完全冻结，可自由上翻，取消勾选恢复追加并立即回到底部跟随。支持 rancher / rancher-sg / rancher-pri 三个环境。
+// @version      1.6.0
+// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；日志弹窗固定为视口大小（标题与按钮不再被滚出屏幕），弹窗内加「暂停滚动」开关——勾选后日志内容停止追加、视图完全冻结，可自由上翻，取消勾选恢复追加并立即回到底部跟随。支持 rancher / rancher-sg / rancher-pri / rancher-dev 四个环境。
 // @author       zhongct
 // @match        *://rancher.glodon.com/*
 // @match        *://rancher-sg.glodon.com/*
 // @match        *://rancher-pri.glodon.com/*
+// @match        *://rancher-dev.glodon.com/*
 // @grant        none
 // @run-at       document-start
 // @noframes
