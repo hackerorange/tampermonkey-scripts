@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达 Rancher · 404 页面自动跳转集群列表
 // @namespace    zhongct.glodon.rancher.redirect
-// @version      1.8.0
-// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；日志弹窗固定为视口大小（标题与按钮不再被滚出屏幕），弹窗内加「暂停滚动」开关——勾选后日志内容停止追加、视图完全冻结，可自由上翻，取消勾选恢复追加并立即回到底部跟随；日志体上方加关键字高亮条——输入关键字点「高亮」，命中处逐一标上亮色背景（流式追加自动跟随，不改日志 DOM），并可勾选「仅显示高亮」隐去其余日志文字、只看命中。支持 rancher / rancher-sg / rancher-pri / rancher-dev 四个环境。
+// @version      1.13.4
+// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；日志弹窗固定为视口大小（标题与按钮不再被滚出屏幕），弹窗内加「暂停滚动」开关——勾选后日志内容停止追加、视图完全冻结，可自由上翻，取消勾选恢复追加并立即回到底部跟随；关键字搜索条挂在日志区上方（弹窗头部行正下方，占一整行）——输入关键字点「高亮」，命中所在的整行画 15% 透明度的黄色背景（CSS Custom Highlight 绘制，只覆盖文字宽度、不顶到最右），当前定位行的背景加深到 30% 更醒目，可用「上一个/下一个」在命中行间定位、「复制」一键复制全部命中行内容，并可勾选「仅显示高亮」隐去其余日志文字、只看命中行。内容重建采用「节流+尾随」——高速流式输出或滚动懒加载出来的新命中行也能自动补上背景（纯防抖会被持续变更饿死，导致只有点高亮那一刻屏幕内已有的行有背景色），另有 2 秒周期兜底重建。支持 rancher / rancher-sg / rancher-pri / rancher-dev 四个环境。
 // @author       zhongct
 // @match        *://rancher.glodon.com/*
 // @match        *://rancher-sg.glodon.com/*
@@ -41,10 +41,13 @@
   const HL_BTN_CLASS = 'r404-hl-btn';
   const HL_COUNT_CLASS = 'r404-hl-count';
   const HL_NAME = 'r404-log-hl';         // CSS Custom Highlight 注册名（::highlight() 引用）
+  const HL_CURRENT_NAME = 'r404-log-hl-cur'; // 当前定位行的高亮名（30% 深黄，叠在浅黄上）
   const HL_ONLY_CLASS = 'r404-hl-only';  // 「仅显示高亮」生效时挂在 pre 上的类
   const HL_ONLY_TOGGLE_CLASS = 'r404-hl-only-toggle'; // 「仅显示高亮」复选框的类名
-  const HL_REFRESH_MS = 250;             // 内容变化后重建高亮的防抖（ms）
+  const HL_REFRESH_MS = 250;             // 内容变化后重建高亮的节流间隔（ms）
   const HL_MAX_RANGES = 5000;            // 单次最多标记的命中数，防超大日志卡顿
+  const HL_NAV_BTN_CLASS = 'r404-hl-nav';   // 「上一个 / 下一个」定位按钮
+  const HL_POS_CLASS = 'r404-hl-pos';       // 「3/12」当前位置指示
   const LOG = '[Rancher 404 跳转]';
 
   let handled = false;   // 本次页面生命周期内是否已处理（跳转或已放弃）
@@ -283,6 +286,7 @@
         flex: 1 1 auto !important;
         height: auto !important;
         max-height: 100% !important;
+        position: relative !important;
       }
       .modal-overlay.${LOG_OVERLAY_CLASS} .container-log > h2 { flex: 0 0 auto !important; }
       .modal-overlay.${LOG_OVERLAY_CLASS} .protip { flex: 0 0 auto !important; }
@@ -335,15 +339,17 @@
         background: #eaf2ff !important;
       }
 
-      /* 关键字高亮条（v1.7.0）：插在日志体正上方，占一条固定高度，
-         不参与日志区滚动；容器是纵向 flex，pre 仍自适应剩余高度 */
-      .modal-overlay.${LOG_OVERLAY_CLASS} .container-log > .${HL_BAR_CLASS} {
-        flex: 0 0 auto !important;
+      /* 关键字搜索条（v1.7.0）：挂在日志区上方、弹窗头部行正下方，占一整行 */
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} {
         display: flex !important;
         align-items: center !important;
         gap: 8px !important;
-        padding: 8px 12px 6px !important;
         box-sizing: border-box !important;
+        flex-wrap: nowrap !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} .container-log > .${HL_BAR_CLASS} {
+        flex: 0 0 auto !important;
+        padding: 8px 12px 6px !important;
       }
       .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} > input {
         flex: 0 1 260px !important;
@@ -416,16 +422,58 @@
       }
 
       /* 「仅显示高亮」生效：日志文字整体透明（不可见），只留命中区。
-         ::highlight() 的 color 优先于元素自身的 color，所以命中处仍清晰 —— 
+         命中行的文字颜色由上面的 pre.r404-hl-only::highlight() 规则恢复
+         （::highlight() 的 color 优先于元素自身的 color）——
          不必再去算「非命中区间」，零额外开销 */
       .modal-overlay.${LOG_OVERLAY_CLASS} pre.log-body.${HL_ONLY_CLASS} {
         color: transparent !important;
       }
 
-      /* 命中样式：亮一档的背景 + 深色文字，浅底/深底日志都读得清 */
-      ::highlight(${HL_NAME}) {
-        background-color: rgba(255, 208, 64, .78);
-        color: #1f2430;
+      /* 「上一个 / 下一个」定位按钮 + 当前位置指示（v1.10.0） */
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} > .${HL_NAV_BTN_CLASS} {
+        flex: 0 0 auto !important;
+        height: 26px !important;
+        padding: 0 10px !important;
+        margin: 0 !important;
+        font-size: 12px !important;
+        line-height: 1 !important;
+        color: #4b5163 !important;
+        background: #f2f4f8 !important;
+        border: 1px solid #cfd6e0 !important;
+        border-radius: 4px !important;
+        cursor: pointer !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} > .${HL_NAV_BTN_CLASS}:hover:not(:disabled) {
+        background: #e6ebf2 !important;
+        border-color: #b7c2d2 !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} > .${HL_NAV_BTN_CLASS}:disabled {
+        color: #aeb6c2 !important;
+        background: #f2f4f8 !important;
+        border-color: #e0e5ec !important;
+        cursor: not-allowed !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} > .${HL_POS_CLASS} {
+        flex: 0 0 auto !important;
+        font-size: 12px !important;
+        color: #6b7280 !important;
+        white-space: nowrap !important;
+      }
+
+      /* 命中行黄色背景（v1.13.4 调色）：::highlight 绘制，只覆盖文字宽度、
+         不顶到日志区最右（v1.12~v1.13.2 的条带覆盖层方案实测有问题，弃用）。
+         普通命中行 15% 黄（比之前 20% 绿更透一些）；当前定位行用第二个
+         注册名画 30% 深黄——注册顺序在后、叠在浅黄上面 */
+      .modal-overlay.${LOG_OVERLAY_CLASS} pre.log-body::highlight(${HL_NAME}) {
+        background-color: rgba(255, 235, 0, .15);
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} pre.log-body::highlight(${HL_CURRENT_NAME}) {
+        background-color: rgba(255, 235, 0, .3);
+      }
+      /* 「仅显示高亮」时行文字被置透明，命中行的文字需要单独恢复可见 */
+      .modal-overlay.${LOG_OVERLAY_CLASS} pre.log-body.${HL_ONLY_CLASS}::highlight(${HL_NAME}),
+      .modal-overlay.${LOG_OVERLAY_CLASS} pre.log-body.${HL_ONLY_CLASS}::highlight(${HL_CURRENT_NAME}) {
+        color: #c9d3de;
       }
     `;
     const style = document.createElement('style');
@@ -664,19 +712,30 @@
     }, true);
   }
 
-  // ============ 关键字高亮（v1.7.0） ============
-  // 日志体正上方注入一条 [输入框][高亮][命中数]；点「高亮」（或输入框回车）后
-  // 把日志中命中的每一处标上亮色背景。
+  // ============ 关键字高亮（v1.7.0，v1.9.0 整行，v1.10.0 定位，v1.11.0 复制，
+  //              v1.13.1 搜索条回到日志体上方，v1.13.3 回退条带覆盖层） ============
+  // 搜索条挂在弹窗头部行正下方、日志体上方，占一整行（v1.12/v1.13 曾塞进头部
+  // 行的 h2 里，h2 是会换行的 flex 行，空间不够会把搜索条和下拉框挤得错乱）。
+  // 点「高亮」（或回车）后把「命中所在的整行」画 15% 透明度的黄色背景（当前
+  // 定位行 30%）。v1.12~v1.13.2 用过条带覆盖层 div（width:100% 顶到日志区最右），
+  // 实测有问题，v1.13.3 回退到 ::highlight 直接绘制——背景只覆盖文字宽度，
+  // 不碰日志 DOM、不额外建层，滚动/流式追加天然跟随。
+  // 日志底色是深色的，绿太浅会看不出来。
+  // 「上一个 / 下一个」在命中行间循环定位滚动，「复制」把全部命中行写入剪贴板。
   // 实现走 CSS Custom Highlight API（CSS.highlights + ::highlight()），只注册
   // Range、不插 <mark>、不改日志 DOM：日志流式追加时区间随文本节点自动跟随，
   // 也不会和 Ember 的写入 / 暂停滚动的拦截打架。关键字按不区分大小写匹配；
-  // 内容变化后 250ms 防抖重建，单次命中数上限 HL_MAX_RANGES。
+  // 内容变化后按「节流 + 尾随」重建：连续输出期间每 250ms 一次、停更后补一次
+  // 收尾（纯防抖会被持续变更饿死——v1.13.1 实测往下滚动新加载的命中行没有背景），
+  // 另有 2 秒周期兜底（v1.13.2）。
   function highlightSupported() {
     return typeof Highlight === 'function' && !!(window.CSS && CSS.highlights);
   }
 
   function clearHighlight() {
-    if (highlightSupported() && CSS.highlights.has(HL_NAME)) CSS.highlights.delete(HL_NAME);
+    if (!highlightSupported()) return;
+    if (CSS.highlights.has(HL_NAME)) CSS.highlights.delete(HL_NAME);
+    if (CSS.highlights.has(HL_CURRENT_NAME)) CSS.highlights.delete(HL_CURRENT_NAME);
   }
 
   // 「仅显示高亮」：只改 pre 的一个类，命中区靠 ::highlight 的 color 保持可见。
@@ -694,66 +753,291 @@
       CSS.highlights.delete(HL_NAME);
       if (st.countEl) st.countEl.textContent = '';
       st.count = 0;
+      st.lines = 0;
+      st.navRanges = [];
+      st.navIdx = -1;
+      updateNavUI(st);
+      paintCurrent(st);
       applyOnlyMode(pre, st, 0);
       return 0;
     }
     const hl = new Highlight();
     const kw = st.keyword.toLowerCase();
     const len = st.keyword.length;
-    let count = 0;
+    let matches = 0;      // 命中次数（文案用）
+    let lines = 0;        // 命中的「视觉行」数（跨节点的同一行只算一次）
+    let rangeCount = 0;
+
+    // 文本节点 → 该行需要着色的 [start, end) 片段集合（同一行跨多个节点时每段一条）
+    const lineMap = new Map();
+    // 行首节点 → Map(行首偏移 → 行信息)：按行去重计数 + 整行范围（导航定位用）
+    const lineStarts = new Map();
+
+    const addSeg = (n, s, e) => {
+      if (e <= s) return;
+      let arr = lineMap.get(n);
+      if (!arr) { arr = []; lineMap.set(n, arr); }
+      arr.push([s, e]);
+    };
+
+    // 命中落在 node 的 idx 处 → 把整行（可能横跨相邻文本节点）登记进 lineMap。
+    // 日志是分块追加的，一行常被切成多个文本节点，所以行首/行尾要跨兄弟节点补齐。
+    const addLineFor = (node, idx) => {
+      // ---- 向左：本节点行首为 0 时，往前面的兄弟文本节点找行首 ----
+      let cur = node;
+      let ls = node.data.lastIndexOf('\n', idx - 1) + 1;
+      const leftSegs = [];
+      while (ls === 0) {
+        const prev = cur.previousSibling;
+        if (!prev || prev.nodeType !== 3) break;
+        const pi = prev.data.lastIndexOf('\n');
+        if (pi === -1) { leftSegs.push([prev, 0, prev.data.length]); cur = prev; }
+        else { leftSegs.push([prev, pi + 1, prev.data.length]); break; }
+      }
+      // ---- 行尾：本节点内先找；找不到说明行还没结束 ----
+      let ce = node.data.indexOf('\n', idx);
+      if (ce === -1) ce = node.data.length;
+      // ---- 行首身份：最靠左那段的起点（同行的多次命中共用，去重 + 导航定位）----
+      const leftMost = leftSegs.length ? leftSegs[leftSegs.length - 1] : null;
+      const keyNode = leftMost ? leftMost[0] : node;
+      const keyOff = leftMost ? leftMost[1] : ls;
+      let lineObjs = lineStarts.get(keyNode);
+      if (!lineObjs) { lineObjs = new Map(); lineStarts.set(keyNode, lineObjs); }
+      let lineObj = lineObjs.get(keyOff);
+      if (!lineObj) {
+        // v1.10.0：记录整行范围（行可跨多个文本节点，Range 天然跨节点），
+        // 供「上一个 / 下一个」定位滚动
+        lineObj = { sn: keyNode, so: keyOff, en: node, eo: ce };
+        lineObjs.set(keyOff, lineObj);
+        lines++;
+      }
+      // ---- 登记着色片段：向左补的段 + 本节点段 ----
+      for (const [n, s, e] of leftSegs) addSeg(n, s, e);
+      addSeg(node, ls, ce);
+      // ---- 向右：本节点以行尾结束（不含 \n）就继续往后补，并延长整行范围 ----
+      if (ce === node.data.length) {
+        let nn = node.nextSibling;
+        while (nn && nn.nodeType === 3) {
+          const ni = nn.data.indexOf('\n');
+          if (ni === -1) {
+            addSeg(nn, 0, nn.data.length);
+            lineObj.en = nn; lineObj.eo = nn.data.length;
+            nn = nn.nextSibling;
+          } else {
+            addSeg(nn, 0, ni);
+            lineObj.en = nn; lineObj.eo = ni;
+            break;
+          }
+        }
+      }
+    };
+
     const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT, null);
+    const textNodes = [];
     let node;
-    while ((node = walker.nextNode()) && count < HL_MAX_RANGES) {
+    while ((node = walker.nextNode()) && matches < HL_MAX_RANGES) {
+      textNodes.push(node);
       const text = node.data;
       if (!text || text.length < len) continue;
       const lower = text.toLowerCase();
       let idx = lower.indexOf(kw);
-      while (idx !== -1 && count < HL_MAX_RANGES) {
-        try {
-          const r = document.createRange();
-          r.setStart(node, idx);
-          r.setEnd(node, idx + len);
-          hl.add(r);
-          count++;
-        } catch (e) { /* 文本节点在处理中被替换，跳过即可 */ }
+      while (idx !== -1 && matches < HL_MAX_RANGES) {
+        matches++;
+        addLineFor(node, idx);
         idx = lower.indexOf(kw, idx + len);
       }
     }
-    if (count > 0) CSS.highlights.set(HL_NAME, hl);
+
+    // 关键字被 chunk 边界切断（前半在上一文本节点、后半在下一文本节点）时，
+    // 按节点逐个 indexOf 找不到 —— 补一遍相邻节点的拼接检查
+    if (matches < HL_MAX_RANGES) {
+      for (let i = 0; i + 1 < textNodes.length && matches < HL_MAX_RANGES; i++) {
+        const a = textNodes[i];
+        const b = textNodes[i + 1];
+        if (!a || !b || a.nextSibling !== b) continue;
+        const tailLen = Math.min(len - 1, a.data.length);
+        const headLen = Math.min(len - 1, b.data.length);
+        if (tailLen <= 0 || headLen <= 0) continue;
+        const joined = a.data.slice(-tailLen) + b.data.slice(0, headLen);
+        const lowJoined = joined.toLowerCase();
+        let p = lowJoined.indexOf(kw);
+        while (p !== -1 && matches < HL_MAX_RANGES) {
+          if (p < tailLen && p + len > tailLen) {   // 命中跨在边界上
+            matches++;
+            addLineFor(a, a.data.length - tailLen + p);
+          }
+          p = lowJoined.indexOf(kw, p + 1);
+        }
+      }
+    }
+
+    // 每个节点内合并重叠/相接的片段，再统一建 Range
+    for (const [n, arr] of lineMap) {
+      arr.sort((a, b) => a[0] - b[0]);
+      let cur = null;
+      const merged = [];
+      for (const s of arr) {
+        if (cur && s[0] <= cur[1]) {
+          if (s[1] > cur[1]) cur[1] = s[1];
+        } else {
+          cur = [s[0], s[1]];
+          merged.push(cur);
+        }
+      }
+      for (const seg of merged) {
+        if (rangeCount >= HL_MAX_RANGES) break;
+        try {
+          const r = document.createRange();
+          r.setStart(n, seg[0]);
+          r.setEnd(n, seg[1]);
+          hl.add(r);
+          rangeCount++;
+        } catch (e) { /* 文本节点在处理中被替换，跳过即可 */ }
+      }
+    }
+
+    // 导航用：每条命中行一个 Range（document 顺序），供「上一个 / 下一个」定位
+    const navRanges = [];
+    for (const lineObjs of lineStarts.values()) {
+      for (const lo of lineObjs.values()) {
+        try {
+          const r = document.createRange();
+          r.setStart(lo.sn, lo.so);
+          r.setEnd(lo.en, lo.eo);
+          navRanges.push(r);
+        } catch (e) { /* 节点在处理中被替换，跳过即可 */ }
+      }
+    }
+    // 关键字没变（流式追加自动重建）时尽量保持当前定位行；换了关键字则复位
+    const keepNav = !!(st.navRanges && st.keyword === st._navKw && st.navIdx >= 0);
+    st._navKw = st.keyword;
+    st.navRanges = navRanges;
+    st.navIdx = keepNav ? Math.min(st.navIdx, navRanges.length - 1) : -1;
+
+    if (rangeCount > 0) CSS.highlights.set(HL_NAME, hl);
     else CSS.highlights.delete(HL_NAME);
     if (st.countEl) {
-      st.countEl.textContent = count === 0
+      st.countEl.textContent = matches === 0
         ? '无匹配'
-        : (count >= HL_MAX_RANGES ? `${count}+ 处匹配` : `${count} 处匹配`);
+        : (matches >= HL_MAX_RANGES ? `${lines} 行 / ${matches}+ 处` : `${lines} 行 / ${matches} 处`);
     }
-    st.count = count;
-    applyOnlyMode(pre, st, count);
-    return count;
+    st.count = matches;
+    st.lines = lines;
+    updateNavUI(st);
+    paintCurrent(st);
+    applyOnlyMode(pre, st, matches);
+    return matches;
+  }
+
+  // 「上一个 / 下一个」定位（v1.10.0）：滚动让第 navIdx 条命中行在日志视口里居中。
+  // 用 Range.getBoundingClientRect 拿行在视口里的位置（无需改 DOM）；
+  // 暂停滚动期间开一次性放行窗口，否则 scrollTop 会被影子 setter 吞掉。
+  function navigateHighlight(pre, st, dir) {
+    const ranges = st.navRanges || [];
+    if (!ranges.length) return;
+    st.navIdx = ((st.navIdx + dir) % ranges.length + ranges.length) % ranges.length;
+    const r = ranges[st.navIdx];
+    try {
+      const rect = r.getBoundingClientRect();
+      const preRect = pre.getBoundingClientRect();
+      const delta = rect.top - preRect.top - (preRect.height - rect.height) / 2;
+      const ps = pre._r404PauseState;
+      if (ps && ps.paused) ps.allowUntil = Date.now() + BOTTOM_ALLOW_MS;
+      pre.scrollTop += delta;
+    } catch (e) { /* ignore */ }
+    updateNavUI(st);
+    paintCurrent(st);   // 深色高亮移到新的当前定位行
+  }
+
+  function updateNavUI(st) {
+    const n = (st.navRanges || []).length;
+    if (st.posEl) st.posEl.textContent = n && st.navIdx >= 0 ? `${st.navIdx + 1}/${n}` : '';
+    if (st.navBtns) for (const b of st.navBtns) b.disabled = !n;
+  }
+
+  // 剪贴板写入：优先 navigator.clipboard（用户手势上下文里一般可用），
+  // 失败退回 textarea + execCommand 兜底（http 页面 / 权限被拒时）
+  function copyText(text) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      return navigator.clipboard.writeText(text).then(() => true).catch(() => copyTextFallback(text));
+    }
+    return Promise.resolve(copyTextFallback(text));
+  }
+
+  function copyTextFallback(text) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '-9999px';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // 当前定位行加深（v1.10.0/v1.13.x）：navIdx 指向的整行 Range 注册为第二个
+  // 高亮名（30% 深黄，注册在后、叠在 15% 浅黄上）。v1.13.3 起不再画条带 div，
+  // 背景全部交给 ::highlight——只覆盖文字宽度，与 v1.11 及之前的观感一致。
+  function paintCurrent(st) {
+    if (!highlightSupported()) return;
+    const cur = (st.navRanges || [])[st.navIdx];
+    if (cur) {
+      const hlc = new Highlight();
+      hlc.add(cur);
+      CSS.highlights.set(HL_CURRENT_NAME, hlc);
+    } else if (CSS.highlights.has(HL_CURRENT_NAME)) {
+      CSS.highlights.delete(HL_CURRENT_NAME);
+    }
   }
 
   function ensureHighlightBar(overlay, pre) {
     // 状态挂在 pre 上：pre 被 Ember 换新时关键字自然重置（等于切了容器/新弹窗）
-    if (!pre._r404Hl) pre._r404Hl = { keyword: '', countEl: null, timer: null, only: false, count: 0 };
+    if (!pre._r404Hl) pre._r404Hl = { keyword: '', countEl: null, timer: null, only: false, count: 0, lines: 0, navRanges: [], navIdx: -1, posEl: null, navBtns: null };
     const st = pre._r404Hl;
 
-    // 内容变化后重建高亮（追加、清空重写都覆盖），防抖合并高频输出
+    // 内容变化后重建高亮（追加、清空重写都覆盖）。v1.13.2 起「节流 + 尾随」
+    // 而不是纯防抖：日志高速流式输出、滚动触发懒加载时 mutation 每几毫秒就来
+    // 一次，纯防抖的定时器会被一直重置、永远等不到安静 250ms，结果只有点
+    // 「高亮」那一刻已在 DOM 里的行有背景，往下滚动新出现的命中行全是裸的
+    // （实测如此）。节流保证连续输出期间至少每 250ms 重建一次，停更后还会
+    // 补一次收尾重建。
     if (!pre._r404HlArmed) {
       pre._r404HlArmed = true;
+      let lastRun = 0;
       const obs = new MutationObserver(() => {
         if (!st.keyword) return;
-        if (st.timer) clearTimeout(st.timer);
+        if (st.timer) return;   // 已有排程在等，这次变更由它一并覆盖
+        const wait = Math.max(0, HL_REFRESH_MS - (Date.now() - lastRun));
         st.timer = setTimeout(() => {
           st.timer = null;
+          lastRun = Date.now();
           applyHighlight(pre, st);
-        }, HL_REFRESH_MS);
+        }, wait);
       });
       obs.observe(pre, { childList: true, subtree: true, characterData: true });
+      // 周期兜底（v1.13.2）：个别写入路径可能绕过观察，新命中的行会漏背景
+      // ——关键字生效期间每 2 秒按当前关键字重建一次，保证最终一致
+      st.guardTimer = setInterval(() => {
+        if (!pre.isConnected) { clearInterval(st.guardTimer); return; }
+        if (!st.keyword || document.hidden) return;
+        applyHighlight(pre, st);
+      }, 2000);
     }
 
+    // 挂载位置（v1.12.0）：优先挂到弹窗头部行——「日志查看:」后面的容器选择框
+    // 右边；弹窗里没有 <select> 时兜底放回日志体上方。位置期望变化时移除重建。
     const existing = overlay.querySelector('.' + HL_BAR_CLASS);
     if (existing) {
-      // 条已存在：同一个 pre 直接复用；pre 被 Ember 换新时旧条绑在废弃
-      // 节点上（输入/按钮都指向旧 pre），移除重建
+      // 条已存在：同一个 pre 就直接复用；pre 被 Ember 换新时移除重建
+      // （旧条绑的是废弃节点）。v1.13.1 起不再挂进头部行——h2 是会换行的
+      // flex 行，空间不够会把搜索条挤成几列、还把下拉框挤换行（实测错乱）
       if (existing._r404Pre === pre) return;
       existing.remove();
       clearHighlight();   // 旧 pre 已废弃，清掉指向它的区间
@@ -773,6 +1057,28 @@
     btn.textContent = '高亮';
     const countEl = document.createElement('span');
     countEl.className = HL_COUNT_CLASS;
+    // 「上一个 / 下一个」定位（v1.10.0）：在命中行之间循环跳转
+    const prevBtn = document.createElement('button');
+    prevBtn.type = 'button';
+    prevBtn.className = HL_NAV_BTN_CLASS;
+    prevBtn.textContent = '上一个';
+    prevBtn.title = '定位到上一条命中行';
+    prevBtn.disabled = true;
+    const nextBtn = document.createElement('button');
+    nextBtn.type = 'button';
+    nextBtn.className = HL_NAV_BTN_CLASS;
+    nextBtn.textContent = '下一个';
+    nextBtn.title = '定位到下一条命中行';
+    nextBtn.disabled = true;
+    const posEl = document.createElement('span');
+    posEl.className = HL_POS_CLASS;
+    // 「复制」（v1.11.0）：把全部命中行的整行内容复制到剪贴板
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = HL_NAV_BTN_CLASS;
+    copyBtn.textContent = '复制';
+    copyBtn.title = '复制全部命中行的整行内容（按日志顺序，换行分隔）';
+    copyBtn.disabled = true;
     // 「仅显示高亮」：勾选后除命中处外的日志文字全部隐去
     const onlyWrap = document.createElement('label');
     onlyWrap.className = HL_ONLY_TOGGLE_CLASS;
@@ -786,8 +1092,14 @@
     bar.appendChild(input);
     bar.appendChild(btn);
     bar.appendChild(countEl);
+    bar.appendChild(prevBtn);
+    bar.appendChild(nextBtn);
+    bar.appendChild(posEl);
+    bar.appendChild(copyBtn);
     bar.appendChild(onlyWrap);
     st.countEl = countEl;
+    st.posEl = posEl;
+    st.navBtns = [prevBtn, nextBtn, copyBtn];
 
     if (!highlightSupported()) {
       btn.disabled = true;
@@ -800,13 +1112,36 @@
     const run = () => {
       st.keyword = input.value.trim();
       const n = applyHighlight(pre, st);
+      if (n > 0 && (st.navRanges || []).length) {
+        st.navIdx = -1;
+        navigateHighlight(pre, st, 1);   // 高亮后先定位到第一条命中行
+      }
       if (n >= 0) {
         console.log(LOG, st.keyword
-          ? `高亮「${st.keyword}」：${n} 处匹配`
+          ? `高亮「${st.keyword}」：${st.lines || 0} 行 / ${n} 处命中`
           : '已清除关键字高亮');
       }
     };
     btn.addEventListener('click', run);
+    prevBtn.addEventListener('click', () => navigateHighlight(pre, st, -1));
+    nextBtn.addEventListener('click', () => navigateHighlight(pre, st, 1));
+    // 复制全部命中行：Range.toString 跨文本节点拼接，天然还原整行内容
+    copyBtn.addEventListener('click', () => {
+      const ranges = st.navRanges || [];
+      if (!ranges.length) return;
+      const text = ranges.map(r => r.toString()).join('\n');
+      copyText(text).then((ok) => {
+        copyBtn.textContent = ok ? `已复制 ${ranges.length} 行` : '复制失败';
+        if (copyBtn._r404Timer) clearTimeout(copyBtn._r404Timer);
+        copyBtn._r404Timer = setTimeout(() => {
+          copyBtn._r404Timer = null;
+          copyBtn.textContent = '复制';
+        }, 1200);
+        console.log(LOG, ok
+          ? `已复制 ${ranges.length} 条命中行（共 ${text.length} 字符）`
+          : '复制到剪贴板失败');
+      });
+    });
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); run(); }
       else if (e.key === 'Escape') { e.stopPropagation(); input.blur(); }
@@ -831,8 +1166,16 @@
       }
     });
 
-    container.insertBefore(bar, pre);
-    console.log(LOG, '已注入关键字高亮条');
+    // 挂载：弹窗头部行（h2，含「日志查看:」与服务/容器选择框）正下方、
+    // 日志体正上方，占一整行——不塞进 h2 内部（h2 是 flex 行，空间不够会把
+    // 搜索条与下拉框挤得换行错乱，v1.12.0/v1.13.0 实测如此）
+    const header = container.querySelector('h2');
+    if (header && header.parentElement === container && header.nextSibling) {
+      container.insertBefore(bar, header.nextSibling);
+    } else {
+      container.insertBefore(bar, pre);
+    }
+    console.log(LOG, '已注入关键字搜索条（日志体上方）');
   }
 
   // ============ 监听（SPA 会随时重绘，不重载页面也可能突然变成错误页）============
