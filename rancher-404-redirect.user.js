@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达 Rancher · 404 页面自动跳转集群列表
 // @namespace    zhongct.glodon.rancher.redirect
-// @version      1.13.4
-// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；日志弹窗固定为视口大小（标题与按钮不再被滚出屏幕），弹窗内加「暂停滚动」开关——勾选后日志内容停止追加、视图完全冻结，可自由上翻，取消勾选恢复追加并立即回到底部跟随；关键字搜索条挂在日志区上方（弹窗头部行正下方，占一整行）——输入关键字点「高亮」，命中所在的整行画 15% 透明度的黄色背景（CSS Custom Highlight 绘制，只覆盖文字宽度、不顶到最右），当前定位行的背景加深到 30% 更醒目，可用「上一个/下一个」在命中行间定位、「复制」一键复制全部命中行内容，并可勾选「仅显示高亮」隐去其余日志文字、只看命中行。内容重建采用「节流+尾随」——高速流式输出或滚动懒加载出来的新命中行也能自动补上背景（纯防抖会被持续变更饿死，导致只有点高亮那一刻屏幕内已有的行有背景色），另有 2 秒周期兜底重建。支持 rancher / rancher-sg / rancher-pri / rancher-dev 四个环境。
+// @version      1.13.5
+// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；日志弹窗固定为视口大小（标题与按钮不再被滚出屏幕），弹窗内加「暂停滚动」开关——勾选后日志内容停止追加、视图完全冻结，可自由上翻，取消勾选恢复追加并立即回到底部跟随；关键字搜索条挂在日志区上方（弹窗头部行正下方，占一整行）——输入关键字点「高亮」，命中所在的整行画 28% 透明度的琥珀色背景（CSS Custom Highlight 绘制，只覆盖文字宽度、不顶到最右，低饱和不刺眼），当前定位行的背景加深到 45% 更醒目，可用「上一个/下一个」在命中行间定位、「复制」一键复制全部命中行内容，并可勾选「仅显示高亮」隐去其余日志文字、只看命中行。内容重建采用「节流+尾随」——高速流式输出或滚动懒加载出来的新命中行也能自动补上背景（纯防抖会被持续变更饿死，导致只有点高亮那一刻屏幕内已有的行有背景色），另有 2 秒周期兜底重建。支持 rancher / rancher-sg / rancher-pri / rancher-dev 四个环境。
 // @author       zhongct
 // @match        *://rancher.glodon.com/*
 // @match        *://rancher-sg.glodon.com/*
@@ -41,7 +41,7 @@
   const HL_BTN_CLASS = 'r404-hl-btn';
   const HL_COUNT_CLASS = 'r404-hl-count';
   const HL_NAME = 'r404-log-hl';         // CSS Custom Highlight 注册名（::highlight() 引用）
-  const HL_CURRENT_NAME = 'r404-log-hl-cur'; // 当前定位行的高亮名（30% 深黄，叠在浅黄上）
+  const HL_CURRENT_NAME = 'r404-log-hl-cur'; // 当前定位行的高亮名（45% 深琥珀，叠在浅琥珀上）
   const HL_ONLY_CLASS = 'r404-hl-only';  // 「仅显示高亮」生效时挂在 pre 上的类
   const HL_ONLY_TOGGLE_CLASS = 'r404-hl-only-toggle'; // 「仅显示高亮」复选框的类名
   const HL_REFRESH_MS = 250;             // 内容变化后重建高亮的节流间隔（ms）
@@ -460,15 +460,16 @@
         white-space: nowrap !important;
       }
 
-      /* 命中行黄色背景（v1.13.4 调色）：::highlight 绘制，只覆盖文字宽度、
+      /* 命中行琥珀色背景（v1.13.5 调色）：::highlight 绘制，只覆盖文字宽度、
          不顶到日志区最右（v1.12~v1.13.2 的条带覆盖层方案实测有问题，弃用）。
-         普通命中行 15% 黄（比之前 20% 绿更透一些）；当前定位行用第二个
-         注册名画 30% 深黄——注册顺序在后、叠在浅黄上面 */
+         v1.13.4 的荧光黄（255,235,0）亮度太高在深底上刺眼——深色界面下最舒适
+         的高亮是低饱和琥珀色（VS Code 暗色主题搜索高亮同款思路）：普通命中行
+         28% 琥珀；当前定位行用第二个注册名画 45% 深琥珀——注册顺序在后、叠在上面 */
       .modal-overlay.${LOG_OVERLAY_CLASS} pre.log-body::highlight(${HL_NAME}) {
-        background-color: rgba(255, 235, 0, .15);
+        background-color: rgba(234, 168, 0, .28);
       }
       .modal-overlay.${LOG_OVERLAY_CLASS} pre.log-body::highlight(${HL_CURRENT_NAME}) {
-        background-color: rgba(255, 235, 0, .3);
+        background-color: rgba(234, 168, 0, .45);
       }
       /* 「仅显示高亮」时行文字被置透明，命中行的文字需要单独恢复可见 */
       .modal-overlay.${LOG_OVERLAY_CLASS} pre.log-body.${HL_ONLY_CLASS}::highlight(${HL_NAME}),
@@ -716,8 +717,8 @@
   //              v1.13.1 搜索条回到日志体上方，v1.13.3 回退条带覆盖层） ============
   // 搜索条挂在弹窗头部行正下方、日志体上方，占一整行（v1.12/v1.13 曾塞进头部
   // 行的 h2 里，h2 是会换行的 flex 行，空间不够会把搜索条和下拉框挤得错乱）。
-  // 点「高亮」（或回车）后把「命中所在的整行」画 15% 透明度的黄色背景（当前
-  // 定位行 30%）。v1.12~v1.13.2 用过条带覆盖层 div（width:100% 顶到日志区最右），
+  // 点「高亮」（或回车）后把「命中所在的整行」画 28% 透明度的琥珀色背景（当前
+  // 定位行 45%）。v1.12~v1.13.2 用过条带覆盖层 div（width:100% 顶到日志区最右），
   // 实测有问题，v1.13.3 回退到 ::highlight 直接绘制——背景只覆盖文字宽度，
   // 不碰日志 DOM、不额外建层，滚动/流式追加天然跟随。
   // 日志底色是深色的，绿太浅会看不出来。
@@ -983,7 +984,7 @@
   }
 
   // 当前定位行加深（v1.10.0/v1.13.x）：navIdx 指向的整行 Range 注册为第二个
-  // 高亮名（30% 深黄，注册在后、叠在 15% 浅黄上）。v1.13.3 起不再画条带 div，
+  // 高亮名（45% 深琥珀，注册在后、叠在 28% 浅琥珀上）。v1.13.3 起不再画条带 div，
   // 背景全部交给 ::highlight——只覆盖文字宽度，与 v1.11 及之前的观感一致。
   function paintCurrent(st) {
     if (!highlightSupported()) return;
