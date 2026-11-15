@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         广联达 Rancher · 404 页面自动跳转集群列表
 // @namespace    zhongct.glodon.rancher.redirect
-// @version      1.6.0
-// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；日志弹窗固定为视口大小（标题与按钮不再被滚出屏幕），弹窗内加「暂停滚动」开关——勾选后日志内容停止追加、视图完全冻结，可自由上翻，取消勾选恢复追加并立即回到底部跟随。支持 rancher / rancher-sg / rancher-pri / rancher-dev 四个环境。
+// @version      1.8.0
+// @description  登录 Rancher 后偶发「This page could not be found」错误页时自动跳转到 /g/clusters；顶部/侧边 Logo（a.nav-logo、.side-menu-logo）点击也跳到集群列表；日志弹窗固定为视口大小（标题与按钮不再被滚出屏幕），弹窗内加「暂停滚动」开关——勾选后日志内容停止追加、视图完全冻结，可自由上翻，取消勾选恢复追加并立即回到底部跟随；日志体上方加关键字高亮条——输入关键字点「高亮」，命中处逐一标上亮色背景（流式追加自动跟随，不改日志 DOM），并可勾选「仅显示高亮」隐去其余日志文字、只看命中。支持 rancher / rancher-sg / rancher-pri / rancher-dev 四个环境。
 // @author       zhongct
 // @match        *://rancher.glodon.com/*
 // @match        *://rancher-sg.glodon.com/*
@@ -36,6 +36,15 @@
   // 「暂停滚动」悬浮开关（v1.4.0）：勾选后冻结 Ember 对日志体的程序化滚动
   const PAUSE_CHIP_CLASS = 'r404-pause-chip';
   const BOTTOM_ALLOW_MS = 600;           // 点「回到底部」后放行程序滚动的窗口
+  // 关键字高亮（v1.7.0）：日志体上方注入 [输入框][高亮]，命中处加亮色背景
+  const HL_BAR_CLASS = 'r404-hl-bar';
+  const HL_BTN_CLASS = 'r404-hl-btn';
+  const HL_COUNT_CLASS = 'r404-hl-count';
+  const HL_NAME = 'r404-log-hl';         // CSS Custom Highlight 注册名（::highlight() 引用）
+  const HL_ONLY_CLASS = 'r404-hl-only';  // 「仅显示高亮」生效时挂在 pre 上的类
+  const HL_ONLY_TOGGLE_CLASS = 'r404-hl-only-toggle'; // 「仅显示高亮」复选框的类名
+  const HL_REFRESH_MS = 250;             // 内容变化后重建高亮的防抖（ms）
+  const HL_MAX_RANGES = 5000;            // 单次最多标记的命中数，防超大日志卡顿
   const LOG = '[Rancher 404 跳转]';
 
   let handled = false;   // 本次页面生命周期内是否已处理（跳转或已放弃）
@@ -325,6 +334,99 @@
         border-color: #8db4ec !important;
         background: #eaf2ff !important;
       }
+
+      /* 关键字高亮条（v1.7.0）：插在日志体正上方，占一条固定高度，
+         不参与日志区滚动；容器是纵向 flex，pre 仍自适应剩余高度 */
+      .modal-overlay.${LOG_OVERLAY_CLASS} .container-log > .${HL_BAR_CLASS} {
+        flex: 0 0 auto !important;
+        display: flex !important;
+        align-items: center !important;
+        gap: 8px !important;
+        padding: 8px 12px 6px !important;
+        box-sizing: border-box !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} > input {
+        flex: 0 1 260px !important;
+        height: 28px !important;
+        padding: 0 9px !important;
+        margin: 0 !important;
+        font-size: 12px !important;
+        color: #2b3140 !important;
+        background: #fff !important;
+        border: 1px solid #cfd6e0 !important;
+        border-radius: 4px !important;
+        outline: none !important;
+        box-shadow: none !important;
+        box-sizing: border-box !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} > input:focus {
+        border-color: #8db4ec !important;
+        box-shadow: 0 0 0 2px rgba(61, 127, 240, .16) !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} > .${HL_BTN_CLASS} {
+        flex: 0 0 auto !important;
+        height: 28px !important;
+        padding: 0 15px !important;
+        margin: 0 !important;
+        font-size: 12px !important;
+        line-height: 1 !important;
+        color: #fff !important;
+        background: #3d7ff0 !important;
+        border: none !important;
+        border-radius: 4px !important;
+        cursor: pointer !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} > .${HL_BTN_CLASS}:hover {
+        background: #2f6cd8 !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} > .${HL_BTN_CLASS}:disabled {
+        background: #b9c3d2 !important;
+        cursor: not-allowed !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} > .${HL_COUNT_CLASS} {
+        flex: 0 0 auto !important;
+        font-size: 12px !important;
+        color: #6b7280 !important;
+        white-space: nowrap !important;
+      }
+
+      /* 「仅显示高亮」复选框：跟在命中数后面 */
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} > .${HL_ONLY_TOGGLE_CLASS} {
+        flex: 0 0 auto !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 4px !important;
+        margin-left: 4px !important;
+        font-size: 12px !important;
+        line-height: 1.4 !important;
+        color: #4b5163 !important;
+        cursor: pointer !important;
+        user-select: none !important;
+        white-space: nowrap !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} > .${HL_ONLY_TOGGLE_CLASS} input {
+        margin: 0 !important;
+        width: 13px !important;
+        height: 13px !important;
+        cursor: pointer !important;
+        accent-color: #3d7ff0 !important;
+      }
+      .modal-overlay.${LOG_OVERLAY_CLASS} .${HL_BAR_CLASS} > .${HL_ONLY_TOGGLE_CLASS}.is-checked {
+        color: #2b6cb0 !important;
+      }
+
+      /* 「仅显示高亮」生效：日志文字整体透明（不可见），只留命中区。
+         ::highlight() 的 color 优先于元素自身的 color，所以命中处仍清晰 —— 
+         不必再去算「非命中区间」，零额外开销 */
+      .modal-overlay.${LOG_OVERLAY_CLASS} pre.log-body.${HL_ONLY_CLASS} {
+        color: transparent !important;
+      }
+
+      /* 命中样式：亮一档的背景 + 深色文字，浅底/深底日志都读得清 */
+      ::highlight(${HL_NAME}) {
+        background-color: rgba(255, 208, 64, .78);
+        color: #1f2430;
+      }
     `;
     const style = document.createElement('style');
     style.id = 'r404-log-modal-style';
@@ -361,6 +463,7 @@
       if (pre) {
         armPauseScroll(pre);
         ensurePauseChip(overlay);
+        ensureHighlightBar(overlay, pre);   // 关键字高亮条（v1.7.0）
       }
     });
     // 弹窗关掉后恢复背景滚动
@@ -368,6 +471,8 @@
     if (document.body.classList.contains(LOG_LOCK_CLASS) !== shouldLock) {
       document.body.classList.toggle(LOG_LOCK_CLASS, shouldLock);
     }
+    // 弹窗全关：清掉残留的高亮区间（区间指向已销毁的日志节点）
+    if (open === 0) clearHighlight();
   }
 
   // ============ 暂停滚动（v1.4.0 起，v1.5.0 加强为「内容也停止追加」） ============
@@ -559,6 +664,177 @@
     }, true);
   }
 
+  // ============ 关键字高亮（v1.7.0） ============
+  // 日志体正上方注入一条 [输入框][高亮][命中数]；点「高亮」（或输入框回车）后
+  // 把日志中命中的每一处标上亮色背景。
+  // 实现走 CSS Custom Highlight API（CSS.highlights + ::highlight()），只注册
+  // Range、不插 <mark>、不改日志 DOM：日志流式追加时区间随文本节点自动跟随，
+  // 也不会和 Ember 的写入 / 暂停滚动的拦截打架。关键字按不区分大小写匹配；
+  // 内容变化后 250ms 防抖重建，单次命中数上限 HL_MAX_RANGES。
+  function highlightSupported() {
+    return typeof Highlight === 'function' && !!(window.CSS && CSS.highlights);
+  }
+
+  function clearHighlight() {
+    if (highlightSupported() && CSS.highlights.has(HL_NAME)) CSS.highlights.delete(HL_NAME);
+  }
+
+  // 「仅显示高亮」：只改 pre 的一个类，命中区靠 ::highlight 的 color 保持可见。
+  // 仅在「勾选了开关 + 有关键字 + 至少 1 处命中」时才生效——否则日志会被整片隐藏。
+  function applyOnlyMode(pre, st, count) {
+    const on = !!(st && st.only) && count > 0;
+    if (pre.classList.contains(HL_ONLY_CLASS) !== on) {
+      pre.classList.toggle(HL_ONLY_CLASS, on);
+    }
+  }
+
+  function applyHighlight(pre, st) {
+    if (!st || !highlightSupported()) return -1;
+    if (!st.keyword) {
+      CSS.highlights.delete(HL_NAME);
+      if (st.countEl) st.countEl.textContent = '';
+      st.count = 0;
+      applyOnlyMode(pre, st, 0);
+      return 0;
+    }
+    const hl = new Highlight();
+    const kw = st.keyword.toLowerCase();
+    const len = st.keyword.length;
+    let count = 0;
+    const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT, null);
+    let node;
+    while ((node = walker.nextNode()) && count < HL_MAX_RANGES) {
+      const text = node.data;
+      if (!text || text.length < len) continue;
+      const lower = text.toLowerCase();
+      let idx = lower.indexOf(kw);
+      while (idx !== -1 && count < HL_MAX_RANGES) {
+        try {
+          const r = document.createRange();
+          r.setStart(node, idx);
+          r.setEnd(node, idx + len);
+          hl.add(r);
+          count++;
+        } catch (e) { /* 文本节点在处理中被替换，跳过即可 */ }
+        idx = lower.indexOf(kw, idx + len);
+      }
+    }
+    if (count > 0) CSS.highlights.set(HL_NAME, hl);
+    else CSS.highlights.delete(HL_NAME);
+    if (st.countEl) {
+      st.countEl.textContent = count === 0
+        ? '无匹配'
+        : (count >= HL_MAX_RANGES ? `${count}+ 处匹配` : `${count} 处匹配`);
+    }
+    st.count = count;
+    applyOnlyMode(pre, st, count);
+    return count;
+  }
+
+  function ensureHighlightBar(overlay, pre) {
+    // 状态挂在 pre 上：pre 被 Ember 换新时关键字自然重置（等于切了容器/新弹窗）
+    if (!pre._r404Hl) pre._r404Hl = { keyword: '', countEl: null, timer: null, only: false, count: 0 };
+    const st = pre._r404Hl;
+
+    // 内容变化后重建高亮（追加、清空重写都覆盖），防抖合并高频输出
+    if (!pre._r404HlArmed) {
+      pre._r404HlArmed = true;
+      const obs = new MutationObserver(() => {
+        if (!st.keyword) return;
+        if (st.timer) clearTimeout(st.timer);
+        st.timer = setTimeout(() => {
+          st.timer = null;
+          applyHighlight(pre, st);
+        }, HL_REFRESH_MS);
+      });
+      obs.observe(pre, { childList: true, subtree: true, characterData: true });
+    }
+
+    const existing = overlay.querySelector('.' + HL_BAR_CLASS);
+    if (existing) {
+      // 条已存在：同一个 pre 直接复用；pre 被 Ember 换新时旧条绑在废弃
+      // 节点上（输入/按钮都指向旧 pre），移除重建
+      if (existing._r404Pre === pre) return;
+      existing.remove();
+      clearHighlight();   // 旧 pre 已废弃，清掉指向它的区间
+    }
+    const container = pre.parentElement;
+    if (!container) return;
+
+    const bar = document.createElement('div');
+    bar.className = HL_BAR_CLASS;
+    bar._r404Pre = pre;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = '输入关键字，点右侧「高亮」';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = HL_BTN_CLASS;
+    btn.textContent = '高亮';
+    const countEl = document.createElement('span');
+    countEl.className = HL_COUNT_CLASS;
+    // 「仅显示高亮」：勾选后除命中处外的日志文字全部隐去
+    const onlyWrap = document.createElement('label');
+    onlyWrap.className = HL_ONLY_TOGGLE_CLASS;
+    onlyWrap.title = '勾选后只显示命中高亮的内容，其余日志文字隐去（仍占位，可正常滚动与复制）';
+    const onlyCb = document.createElement('input');
+    onlyCb.type = 'checkbox';
+    const onlyText = document.createElement('span');
+    onlyText.textContent = '仅显示高亮';
+    onlyWrap.appendChild(onlyCb);
+    onlyWrap.appendChild(onlyText);
+    bar.appendChild(input);
+    bar.appendChild(btn);
+    bar.appendChild(countEl);
+    bar.appendChild(onlyWrap);
+    st.countEl = countEl;
+
+    if (!highlightSupported()) {
+      btn.disabled = true;
+      input.disabled = true;
+      onlyCb.disabled = true;
+      countEl.textContent = '当前浏览器不支持高亮';
+      console.warn(LOG, '浏览器不支持 CSS Custom Highlight API，关键字高亮不可用');
+    }
+
+    const run = () => {
+      st.keyword = input.value.trim();
+      const n = applyHighlight(pre, st);
+      if (n >= 0) {
+        console.log(LOG, st.keyword
+          ? `高亮「${st.keyword}」：${n} 处匹配`
+          : '已清除关键字高亮');
+      }
+    };
+    btn.addEventListener('click', run);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); run(); }
+      else if (e.key === 'Escape') { e.stopPropagation(); input.blur(); }
+    });
+    // 清空输入即撤掉高亮，不必再点按钮
+    input.addEventListener('input', () => {
+      if (input.value.trim()) return;
+      st.keyword = '';
+      applyHighlight(pre, st);
+      console.log(LOG, '已清除关键字高亮');
+    });
+
+    // 「仅显示高亮」开关：立即按当前命中数决定是否隐藏其余文字
+    onlyCb.addEventListener('change', () => {
+      st.only = onlyCb.checked;
+      onlyWrap.classList.toggle('is-checked', onlyCb.checked);
+      applyOnlyMode(pre, st, st.count || 0);
+      if (onlyCb.checked && !(st.count > 0)) {
+        console.log(LOG, '已勾选「仅显示高亮」：当前无命中，先输入关键字点「高亮」后生效');
+      } else {
+        console.log(LOG, onlyCb.checked ? '已开启「仅显示高亮」' : '已关闭「仅显示高亮」');
+      }
+    });
+
+    container.insertBefore(bar, pre);
+    console.log(LOG, '已注入关键字高亮条');
+  }
+
   // ============ 监听（SPA 会随时重绘，不重载页面也可能突然变成错误页）============
   let throttleTimer = null;
   function scan() {
@@ -597,5 +873,5 @@
   bindLogoClick();
   bindBottomButton();
 
-  console.log(LOG, '已启动：404 自动跳转 + Logo 跳转 + 日志弹窗固定 + 暂停滚动');
+  console.log(LOG, '已启动：404 自动跳转 + Logo 跳转 + 日志弹窗固定 + 暂停滚动 + 关键字高亮');
 })();
